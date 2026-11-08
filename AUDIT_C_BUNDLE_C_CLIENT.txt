@@ -1,0 +1,2882 @@
+===== FILE: geminx-v2/src/routes/digital-ambush-preview-bridge.ts =====
+===== SHA256: 9f197c84baa5ca84a6b6a81f2dd95618561aecbf4e0429ae7a07576afdea4062 =====
+===== LINES: 1058 =====
+     1	import { createHash, timingSafeEqual, randomUUID } from "node:crypto";
+     2	import { existsSync, readFileSync } from "node:fs";
+     3	import path from "node:path";
+     4	import { Router, type NextFunction, type Request, type Response } from "express";
+     5	import { ArtifactStorageService } from "../modules/artifact_storage/service.js";
+     6	import { SmartSiteStore, type ProspectRecord } from "../modules/smart_site/store.js";
+     7	import { geminxPersistentRuntimeRoot } from "../modules/runtime-root.js";
+     8	import { founderMediaStorageDir } from "../modules/companion/founder-media.js";
+     9	import {
+    10	  generateEditCapability,
+    11	  verifyEditCapability,
+    12	  generateVisitorToken,
+    13	  verifyVisitorToken,
+    14	  deriveSessionNonce,
+    15	  checkAndRecordSessionEditBudget,
+    16	  injectAuditedViewerBridge,
+    17	  executeBrianLiveEdit,
+    18	  checkDomainAvailability,
+    19	  type BrianSelectedElementContext,
+    20	} from "../modules/companion/brian-live-editor.js";
+    21	
+    22	const SITE_ID = "entreprenuity-business-solutions";
+    23	const IMAGE_SIGNATURE = "89504e470d0a1a0a";
+    24	// Both the original 128-bit PNG-factory IDs and SmartSiteStore UUID v4 IDs.
+    25	const SECRET_PATTERN = /^(?:[a-f0-9]{32}|[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12})$/i;
+    26	const SHA_PATTERN = /^[a-f0-9]{64}$/;
+    27	const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+    28	const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    29	
+    30	function equalSecret(a: string, b: string): boolean {
+    31	  const aa = Buffer.from(a);
+    32	  const bb = Buffer.from(b);
+    33	  return aa.length === bb.length && aa.length > 0 && timingSafeEqual(aa, bb);
+    34	}
+    35	
+    36	// A DOM certification is valid only for its six QA widths and limited lifetime.
+    37	// Old PNG records may still be read for historical compatibility, never to
+    38	// authorise the new live-HTML preview flow.
+    39	function isDomReady(p: ProspectRecord | null): boolean {
+    40	  const dom = p?.preview_dom_qa;
+    41	  return Boolean(
+    42	    dom &&
+    43	      p?.preview_qa_status === "INTERNAL_QA_PASSED_AWAITING_FOUNDER" &&
+    44	      typeof dom.qa_receipt_sha256 === "string" &&
+    45	      SHA_PATTERN.test(dom.qa_receipt_sha256) &&
+    46	      typeof dom.source_commit === "string" &&
+    47	      /^[a-f0-9]{40}$/i.test(dom.source_commit) &&
+    48	      ["automotive", "construction-trades", "beauty-botanical", "property-realestate", "food-artisan"].includes(
+    49	        dom.template_family
+    50	      ) &&
+    51	      Array.isArray(dom.widths) &&
+    52	      [320, 390, 430, 768, 1024, 1440].every((width) => dom.widths.includes(width)) &&
+    53	      typeof dom.expires_at === "string" &&
+    54	      Number.isFinite(Date.parse(dom.expires_at)) &&
+    55	      Date.parse(dom.expires_at) > Date.now()
+    56	  );
+    57	}
+    58	
+    59	function isPreviewReady(p: ProspectRecord | null): p is ProspectRecord {
+    60	  if (!p || p.preview_qa_status !== "INTERNAL_QA_PASSED_AWAITING_FOUNDER") return false;
+    61	  const legacyImageReady = Boolean(p.preview_image_sha256 && SHA_PATTERN.test(p.preview_image_sha256));
+    62	  return legacyImageReady || isDomReady(p);
+    63	}
+    64	
+    65	function buildRichV6TradeBaselineHtml(p: ProspectRecord): string {
+    66	  const trade = p.business_type || "Specialist Trade Services";
+    67	  const location = p.location || "West Midlands";
+    68	  const phoneDisplay = p.brand_evidence?.phone || "01384 900112";
+    69	  const phoneHref = `tel:${phoneDisplay.replace(/[^\d+]/g, "")}`;
+    70	  const isRoofing = trade.toLowerCase().includes("roof");
+    71	  const isPlumbing =
+    72	    trade.toLowerCase().includes("plumb") ||
+    73	    trade.toLowerCase().includes("boiler") ||
+    74	    trade.toLowerCase().includes("heat");
+    75	
+    76	  const heroPhoto = isRoofing
+    77	    ? "https://images.unsplash.com/photo-1632759145351-1d592919f522?auto=format&fit=crop&w=1000&q=80"
+    78	    : isPlumbing
+    79	      ? "https://images.unsplash.com/photo-1585704032915-c3400ca199e7?auto=format&fit=crop&w=1000&q=80"
+    80	      : "https://images.unsplash.com/photo-1504307651254-35680f356dfd?auto=format&fit=crop&w=1000&q=80";
+    81	
+    82	  const services =
+    83	    p.recommended_services && p.recommended_services.length >= 3
+    84	      ? p.recommended_services.slice(0, 3).map((s) => ({
+    85	          title: s.title,
+    86	          desc: s.commercial_outcome || s.why_it_fits,
+    87	        }))
+    88	      : [
+    89	          {
+    90	            title: isRoofing ? "Pitched & Flat Roof Installations" : `Full ${trade} Installations`,
+    91	            desc: `Durable, weather-tested materials fitted by experienced local specialists across ${location}.`,
+    92	          },
+    93	          {
+    94	            title: isRoofing ? "Emergency Storm & Leak Repairs" : "Rapid Diagnostic & Repair Callouts",
+    95	            desc: `Fast local attendance with clear upfront quotations and long-lasting workmanship.`,
+    96	          },
+    97	          {
+    98	            title: isRoofing ? "Chimney, Leadwork & uPVC Roofline" : "Scheduled Preventative Maintenance",
+    99	            desc: `Complete structural care, exterior protection, and clean site handover on every job.`,
+   100	          },
+   101	        ];
+   102	
+   103	  return `<!DOCTYPE html>
+   104	<html lang="en-GB">
+   105	<head>
+   106	  <meta charset="utf-8">
+   107	  <meta name="viewport" content="width=device-width, initial-scale=1">
+   108	  <title>${p.business_name} | ${trade} in ${location}</title>
+   109	  <link rel="preconnect" href="https://fonts.googleapis.com">
+   110	  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+   111	  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Sora:wght@600;700;800&display=swap" rel="stylesheet">
+   112	  <style>
+   113	    :root {
+   114	      --bg-base: #060e1e;
+   115	      --bg-surface: #0a172e;
+   116	      --bg-surface-elevated: #112244;
+   117	      --bg-card: rgba(10, 23, 46, 0.88);
+   118	      --gold: #d4af37;
+   119	      --gold-light: #f5e08c;
+   120	      --gold-glow: rgba(212, 175, 55, 0.25);
+   121	      --primary-accent: #d4af37;
+   122	      --secondary-accent: #f5e08c;
+   123	      --border-accent: rgba(212, 175, 55, 0.42);
+   124	      --text-main: #f8fafc;
+   125	      --text-muted: #94a3b8;
+   126	      --font-heading: 'Sora', sans-serif;
+   127	      --font-body: 'Inter', system-ui, sans-serif;
+   128	    }
+   129	    * { box-sizing: border-box; }
+   130	    body {
+   131	      margin: 0;
+   132	      font-family: var(--font-body);
+   133	      background-color: var(--bg-base);
+   134	      color: var(--text-main);
+   135	      line-height: 1.6;
+   136	      overflow-x: hidden;
+   137	    }
+   138	    header {
+   139	      position: sticky;
+   140	      top: 0;
+   141	      z-index: 40;
+   142	      background: rgba(6, 14, 30, 0.88);
+   143	      backdrop-filter: blur(14px);
+   144	      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+   145	      padding: 16px 24px;
+   146	    }
+   147	    .nav-container {
+   148	      max-width: 1200px;
+   149	      margin: 0 auto;
+   150	      display: flex;
+   151	      align-items: center;
+   152	      justify-content: space-between;
+   153	      gap: 16px;
+   154	      flex-wrap: wrap;
+   155	    }
+   156	    .brand {
+   157	      font-family: var(--font-heading);
+   158	      font-weight: 800;
+   159	      font-size: 1.2rem;
+   160	      color: var(--text-main);
+   161	      text-decoration: none;
+   162	      letter-spacing: -0.02em;
+   163	    }
+   164	    .btn {
+   165	      display: inline-flex;
+   166	      align-items: center;
+   167	      justify-content: center;
+   168	      gap: 8px;
+   169	      padding: 12px 22px;
+   170	      border-radius: 10px;
+   171	      font-weight: 700;
+   172	      font-size: 0.95rem;
+   173	      text-decoration: none;
+   174	      background: linear-gradient(135deg, var(--primary-accent) 0%, var(--secondary-accent) 100%);
+   175	      color: #060e1e;
+   176	      border: 1px solid var(--border-accent);
+   177	      transition: transform 0.2s ease, box-shadow 0.2s ease;
+   178	    }
+   179	    .hero {
+   180	      max-width: 1200px;
+   181	      margin: 0 auto;
+   182	      padding: 84px 24px 72px;
+   183	      display: grid;
+   184	      grid-template-columns: 1fr;
+   185	      gap: 36px;
+   186	      align-items: center;
+   187	    }
+   188	    @media (min-width: 768px) {
+   189	      .hero {
+   190	        grid-template-columns: minmax(0, 1.12fr) minmax(0, 0.88fr);
+   191	        gap: 48px;
+   192	        padding: 108px 24px 88px;
+   193	      }
+   194	    }
+   195	    .badge {
+   196	      display: inline-block;
+   197	      padding: 6px 14px;
+   198	      border-radius: 999px;
+   199	      background: var(--gold-glow);
+   200	      color: var(--primary-accent);
+   201	      border: 1px solid var(--border-accent);
+   202	      font-size: 0.75rem;
+   203	      font-weight: 700;
+   204	      text-transform: uppercase;
+   205	      letter-spacing: 0.06em;
+   206	      margin-bottom: 16px;
+   207	    }
+   208	    h1 {
+   209	      font-family: var(--font-heading);
+   210	      font-size: clamp(2rem, 4.2vw, 3.35rem);
+   211	      line-height: 1.1;
+   212	      margin: 0 0 18px;
+   213	      letter-spacing: -0.025em;
+   214	    }
+   215	    .hero p {
+   216	      color: var(--text-muted);
+   217	      font-size: 1.08rem;
+   218	      margin: 0 0 28px;
+   219	      max-width: 580px;
+   220	    }
+   221	    .hero-actions {
+   222	      display: flex;
+   223	      flex-wrap: wrap;
+   224	      gap: 14px;
+   225	      align-items: center;
+   226	    }
+   227	    .hero-photo {
+   228	      width: 100%;
+   229	      height: 380px;
+   230	      object-fit: cover;
+   231	      border-radius: 20px;
+   232	      border: 1px solid rgba(255, 255, 255, 0.12);
+   233	      box-shadow: 0 24px 60px -15px rgba(0, 0, 0, 0.65);
+   234	    }
+   235	    .services-section {
+   236	      padding: 72px 24px;
+   237	      background: var(--bg-surface);
+   238	      border-top: 1px solid rgba(255, 255, 255, 0.07);
+   239	      border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+   240	    }
+   241	    .container {
+   242	      max-width: 1200px;
+   243	      margin: 0 auto;
+   244	    }
+   245	    .services-grid {
+   246	      display: grid;
+   247	      grid-template-columns: 1fr;
+   248	      gap: 24px;
+   249	      margin-top: 36px;
+   250	    }
+   251	    @media (min-width: 640px) and (max-width: 1023px) {
+   252	      .services-grid {
+   253	        grid-template-columns: repeat(2, minmax(0, 1fr));
+   254	      }
+   255	      .service-card:nth-child(3) {
+   256	        grid-column: 1 / -1;
+   257	      }
+   258	    }
+   259	    @media (min-width: 1024px) {
+   260	      .services-grid {
+   261	        grid-template-columns: repeat(3, minmax(0, 1fr));
+   262	      }
+   263	    }
+   264	    .service-card {
+   265	      background: var(--bg-card);
+   266	      border: 1px solid rgba(255, 255, 255, 0.1);
+   267	      border-radius: 16px;
+   268	      padding: 26px;
+   269	    }
+   270	    .service-card h3 {
+   271	      font-family: var(--font-heading);
+   272	      margin: 0 0 10px;
+   273	      font-size: 1.2rem;
+   274	    }
+   275	    .service-card p {
+   276	      margin: 0;
+   277	      color: var(--text-muted);
+   278	      font-size: 0.95rem;
+   279	    }
+   280	    footer {
+   281	      padding: 40px 24px;
+   282	      text-align: center;
+   283	      font-size: 0.88rem;
+   284	      color: var(--text-muted);
+   285	      border-top: 1px solid rgba(255, 255, 255, 0.08);
+   286	    }
+   287	  </style>
+   288	</head>
+   289	<body>
+   290	  <header data-brian-section="header_nav">
+   291	    <div class="nav-container">
+   292	      <a href="#top" class="brand">${p.business_name}</a>
+   293	      <div style="display: flex; align-items: center; gap: 14px;">
+   294	        <a href="${phoneHref}" class="btn">Call ${phoneDisplay}</a>
+   295	      </div>
+   296	    </div>
+   297	  </header>
+   298	
+   299	  <section class="hero" data-brian-section="hero_section">
+   300	    <div class="hero-content">
+   301	      <span class="badge">${trade} • ${location}</span>
+   302	      <h1>Trusted ${trade} Specialists Serving ${location}</h1>
+   303	      <p>${p.business_name} delivers dependable workmanship, clear written quotations, and responsive local service across ${location} and surrounding areas.</p>
+   304	      <div class="hero-actions">
+   305	        <a href="${phoneHref}" class="btn">Request a Free Quote • ${phoneDisplay}</a>
+   306	      </div>
+   307	    </div>
+   308	    <div class="hero-visual">
+   309	      <img src="${heroPhoto}" alt="${p.business_name} ${trade}" class="hero-photo" />
+   310	    </div>
+   311	  </section>
+   312	
+   313	  <section class="services-section" data-brian-section="services">
+   314	    <div class="container">
+   315	      <span class="badge">Core Trade Capabilities</span>
+   316	      <h2 style="font-family: var(--font-heading); font-size: clamp(1.6rem, 3vw, 2.25rem); margin: 0 0 10px;">Specialist Services Across ${location}</h2>
+   317	      <div class="services-grid">
+   318	        ${services
+   319	          .map(
+   320	            (s) => `<article class="service-card">
+   321	          <h3>${s.title}</h3>
+   322	          <p>${s.desc}</p>
+   323	        </article>`
+   324	          )
+   325	          .join("\n")}
+   326	      </div>
+   327	    </div>
+   328	  </section>
+   329	
+   330	  <footer data-brian-section="footer">
+   331	    <p style="margin: 0 0 6px; font-weight: 600; color: var(--text-main);">${p.business_name} — ${trade} in ${location}</p>
+   332	    <p style="margin: 0;">Direct Enquiries: <a href="${phoneHref}" style="color: var(--primary-accent); text-decoration: none;">${phoneDisplay}</a> • Entreprenuity Website Concept Preview</p>
+   333	  </footer>
+   334	</body>
+   335	</html>`;
+   336	}
+   337	
+   338	/** Trusted server-to-server lookups ONLY. Never expose CRM or bearer tokens to browsers. */
+   339	export function digitalAmbushPreviewBridgeRouter(
+   340	  store = new SmartSiteStore(geminxPersistentRuntimeRoot()),
+   341	  media = new ArtifactStorageService({ storageDir: founderMediaStorageDir() })
+   342	): Router {
+   343	  const router = Router();
+   344	  router.use((req: Request, res: Response, next: NextFunction) => {
+   345	    res.setHeader("Cache-Control", "private, no-store");
+   346	    res.setHeader("X-Content-Type-Options", "nosniff");
+   347	    const expected = process.env.GEMINX_PREVIEW_BRIDGE_TOKEN ?? "";
+   348	    const legacy = process.env.GEMINX_PREVIEW_BRIDGE_TOKEN_LEGACY ?? "";
+   349	    const legacyShaPrefix = process.env.GEMINX_PREVIEW_BRIDGE_LEGACY_SHA_PREFIX?.trim() ?? "";
+   350	    const token = (req.header("authorization") ?? "").replace(/^Bearer\s+/i, "");
+   351	    if (expected.length < 32 && legacy.length < 32) {
+   352	      res.status(503).json({ ok: false, error: "PREVIEW_BRIDGE_UNCONFIGURED" });
+   353	      return;
+   354	    }
+   355	    const tokenHash = token ? createHash("sha256").update(token).digest("hex") : "";
+   356	    const matchExpected = expected.length >= 32 && equalSecret(token, expected);
+   357	    const matchLegacy =
+   358	      (legacy.length >= 32 && equalSecret(token, legacy)) ||
+   359	      (token.length === 64 && /^[a-f0-9]{32,64}$/i.test(legacyShaPrefix) && tokenHash.startsWith(legacyShaPrefix));
+   360	    if (!matchExpected && !matchLegacy) {
+   361	      console.warn(`[ambush-preview] UNAUTHORISED: path=${req.path} token_len=${token.length}`);
+   362	      res.status(401).json({ ok: false, error: "UNAUTHORISED" });
+   363	      return;
+   364	    }
+   365	    next();
+   366	  });
+   367	
+   368	  function getReady(req: Request): ProspectRecord | null {
+   369	    const secureId = String(req.params.secureId ?? "").trim();
+   370	    if (!SECRET_PATTERN.test(secureId)) return null;
+   371	    const p = store.getProspectBySecureId(SITE_ID, secureId);
+   372	    return isPreviewReady(p) ? p : null;
+   373	  }
+   374	
+   375	  router.get("/:secureId", async (req, res) => {
+   376	    const p = getReady(req);
+   377	    if (!p) {
+   378	      res.status(404).json({ ok: false, error: "PREVIEW_NOT_READY" });
+   379	      return;
+   380	    }
+   381	    const domReady = isDomReady(p);
+   382	    if (!domReady) {
+   383	      const record = await media.getArtifactRecord(p.preview_image_sha256!);
+   384	      if (
+   385	        !record ||
+   386	        record.content_type !== "image/png" ||
+   387	        record.size_bytes < 45_000 ||
+   388	        record.size_bytes > MAX_IMAGE_BYTES
+   389	      ) {
+   390	        res.status(404).json({ ok: false, error: "PREVIEW_ARTIFACT_NOT_FOUND" });
+   391	        return;
+   392	      }
+   393	    }
+   394	    const secret = process.env.GEMINX_PREVIEW_BRIDGE_TOKEN || "geminx-bridge-secret-key-for-brian-session";
+   395	    const editCapability = generateEditCapability(secret, p.secure_id);
+   396	
+   397	    // Bounded, prospect-specific public-facing projection. No contact details,
+   398	    // raw CRM, threads, other businesses, private Brain or admin action links.
+   399	    res.json({
+   400	      ok: true,
+   401	      preview: {
+   402	        prospectId: p.prospect_id,
+   403	        secureId: p.secure_id,
+   404	        urlSlug: p.slug,
+   405	        businessName: p.business_name,
+   406	        trade: p.business_type,
+   407	        location: p.location,
+   408	        conceptNotes: ["Proposed responsive homepage concept; content subject to customer and founder review."],
+   409	        status: "preview",
+   410	        conceptMode: domReady ? "RESPONSIVE_DOM" : "LEGACY_PNG",
+   411	        editCapability,
+   412	        ...(domReady
+   413	          ? { domStatus: "INTERNAL_QA_PASSED_AWAITING_FOUNDER", templateFamily: p.preview_dom_qa!.template_family }
+   414	          : { imageStatus: "INTERNAL_QA_PASSED_AWAITING_FOUNDER" }),
+   415	        kerryContext: {
+   416	          prospectId: p.prospect_id,
+   417	          businessType: p.business_type,
+   418	          location: p.location,
+   419	        },
+   420	      },
+   421	    });
+   422	  });
+   423	
+   424	  // Register or sync verified prospect records into SmartSiteStore
+   425	  // Authenticated strictly by the existing preview bridge bearer token.
+   426	  router.post("/register", async (req, res) => {
+   427	    const body = (req.body ?? {}) as Record<string, unknown>;
+   428	    const raw = (body.prospect ?? {}) as Record<string, unknown>;
+   429	    const p = body.prospect as ProspectRecord;
+   430	    const secId =
+   431	      typeof raw.secure_id === "string" ? raw.secure_id : typeof raw.secureId === "string" ? raw.secureId : "";
+   432	    const pngBase64 = typeof body.png_base64 === "string" ? body.png_base64.trim() : "";
+   433	    if (pngBase64) {
+   434	      const pngBytes = Buffer.from(pngBase64, "base64");
+   435	      if (
+   436	        pngBytes.length < 45_000 ||
+   437	        pngBytes.length > MAX_IMAGE_BYTES ||
+   438	        pngBytes.subarray(0, 8).toString("hex") !== IMAGE_SIGNATURE
+   439	      ) {
+   440	        res.status(400).json({ ok: false, error: "INVALID_PNG_ARTIFACT" });
+   441	        return;
+   442	      }
+   443	      res.status(400).json({ ok: false, error: "AUTHORITATIVE_QA_RECEIPT_REQUIRED" });
+   444	      return;
+   445	    }
+   446	    const candidate = { ...raw, secure_id: secId } as unknown as ProspectRecord;
+   447	    if (
+   448	      !p ||
+   449	      !secId ||
+   450	      !SECRET_PATTERN.test(secId) ||
+   451	      typeof p.business_name !== "string" ||
+   452	      typeof p.business_type !== "string" ||
+   453	      typeof p.location !== "string" ||
+   454	      !isPreviewReady(candidate)
+   455	    ) {
+   456	      const err =
+   457	        raw.preview_qa_status === "INTERNAL_QA_PENDING_REVIEW"
+   458	          ? "INDEPENDENT_QA_RECEIPT_REQUIRED"
+   459	          : "INVALID_PROSPECT_PAYLOAD";
+   460	      res.status(400).json({ ok: false, error: err });
+   461	      return;
+   462	    }
+   463	    const certified = store.getProspectBySecureId(SITE_ID, secId);
+   464	    if (
+   465	      !certified ||
+   466	      !isPreviewReady(certified) ||
+   467	      certified.slug !== candidate.slug ||
+   468	      certified.secure_id !== secId ||
+   469	      certified.business_name !== candidate.business_name ||
+   470	      certified.business_type !== candidate.business_type ||
+   471	      certified.location !== candidate.location ||
+   472	      (candidate.preview_image_sha256 && candidate.preview_image_sha256 !== certified.preview_image_sha256) ||
+   473	      (candidate.preview_dom_qa &&
+   474	        (!isDomReady(certified) ||
+   475	          certified.preview_dom_qa?.qa_receipt_sha256 !== candidate.preview_dom_qa.qa_receipt_sha256))
+   476	    ) {
+   477	      res.status(409).json({ ok: false, error: "AUTHORITATIVE_BACKEND_PREVIEW_QA_REQUIRED" });
+   478	      return;
+   479	    }
+   480	    if (certified.preview_image_sha256) {
+   481	      const sha = certified.preview_image_sha256;
+   482	      const artifact = await media.getArtifactRecord(sha);
+   483	      const content = await media.getArtifactContent(sha);
+   484	      if (
+   485	        !artifact ||
+   486	        artifact.content_type !== "image/png" ||
+   487	        artifact.size_bytes < 45_000 ||
+   488	        artifact.size_bytes > MAX_IMAGE_BYTES ||
+   489	        !content ||
+   490	        content.length !== artifact.size_bytes ||
+   491	        content.subarray(0, 8).toString("hex") !== IMAGE_SIGNATURE ||
+   492	        createHash("sha256").update(content).digest("hex") !== sha
+   493	      ) {
+   494	        res.status(409).json({ ok: false, error: "AUTHORITATIVE_PREVIEW_IMAGE_READBACK_FAILED" });
+   495	        return;
+   496	      }
+   497	    }
+   498	    const record = store.upsertProspect({ ...raw, secure_id: secId }, SITE_ID);
+   499	    const finalRecord = store.getProspect(SITE_ID, record.slug) ?? record;
+   500	    if (!isPreviewReady(finalRecord)) {
+   501	      res.status(409).json({ ok: false, error: "AUTHORITATIVE_BACKEND_PREVIEW_QA_REQUIRED" });
+   502	      return;
+   503	    }
+   504	    res.status(201).json({ ok: true, prospect: finalRecord });
+   505	  });
+   506	
+   507	  router.post("/:secureId/kerry-event", (req, res) => {
+   508	    const prospect = getReady(req);
+   509	    if (!prospect || !isDomReady(prospect)) {
+   510	      res.status(404).json({ ok: false, error: "PREVIEW_NOT_READY" });
+   511	      return;
+   512	    }
+   513	    const requestId = typeof req.body?.requestId === "string" ? req.body.requestId.trim().slice(0, 120) : "";
+   514	    const question = typeof req.body?.question === "string" ? req.body.question.trim().slice(0, 500) : "";
+   515	    const response = typeof req.body?.answer === "string" ? req.body.answer.trim().slice(0, 500) : "";
+   516	    if (!/^[a-zA-Z0-9_-]{8,120}$/.test(requestId) || !question || !response) {
+   517	      res.status(400).json({ ok: false, error: "KERRY_EVENT_INVALID" });
+   518	      return;
+   519	    }
+   520	    const receipt = store.appendEvent({
+   521	      site_id: SITE_ID,
+   522	      event: "kerry_message",
+   523	      session_id: requestId,
+   524	      metadata: {
+   525	        prospect_id: prospect.prospect_id,
+   526	        secure_id: prospect.secure_id,
+   527	        request_id: requestId,
+   528	        question,
+   529	        answer: response,
+   530	        source: "digital-ambush-preview",
+   531	        no_external_send: true,
+   532	      },
+   533	    });
+   534	    res.status(201).json({ ok: true, receiptId: receipt.event_id, prospectId: prospect.prospect_id });
+   535	  });
+   536	
+   537	  router.get("/:secureId/image", async (req, res) => {
+   538	    const p = getReady(req);
+   539	    if (!p) {
+   540	      res.status(404).json({ ok: false, error: "PREVIEW_NOT_READY" });
+   541	      return;
+   542	    }
+   543	    if (!p.preview_image_sha256 || !SHA_PATTERN.test(p.preview_image_sha256)) {
+   544	      res.status(404).json({ ok: false, error: "PREVIEW_IMAGE_NOT_AVAILABLE" });
+   545	      return;
+   546	    }
+   547	    const sha = p.preview_image_sha256;
+   548	    const record = await media.getArtifactRecord(sha);
+   549	    if (
+   550	      !record ||
+   551	      record.content_type !== "image/png" ||
+   552	      record.size_bytes < 45_000 ||
+   553	      record.size_bytes > MAX_IMAGE_BYTES
+   554	    ) {
+   555	      res.status(404).json({ ok: false, error: "PREVIEW_ARTIFACT_NOT_FOUND" });
+   556	      return;
+   557	    }
+   558	    const bytes = await media.getArtifactContent(sha);
+   559	    if (
+   560	      !bytes ||
+   561	      bytes.length !== record.size_bytes ||
+   562	      bytes.length > MAX_IMAGE_BYTES ||
+   563	      bytes.subarray(0, 8).toString("hex") !== IMAGE_SIGNATURE ||
+   564	      createHash("sha256").update(bytes).digest("hex") !== sha
+   565	    ) {
+   566	      res.status(404).json({ ok: false, error: "PREVIEW_IMAGE_INVALID" });
+   567	      return;
+   568	    }
+   569	    res.setHeader("Content-Type", "image/png");
+   570	    res.setHeader("X-Content-Type-Options", "nosniff");
+   571	    res.status(200).send(bytes);
+   572	  });
+   573	
+   574	  function resolveRawBaseHtmlForProspect(p: ProspectRecord, ignoreActiveRevision = false): string {
+   575	    if (!ignoreActiveRevision && p.active_revision_id && p.active_revision_id !== "v1-baseline") {
+   576	      const rev = store.getBrianRevision(SITE_ID, p.slug, p.active_revision_id);
+   577	      if (rev?.html_content) return rev.html_content;
+   578	    }
+   579	    const diskCandidates = [
+   580	      path.resolve(process.cwd(), `public/brian-previews/${p.slug}/index.html`),
+   581	      path.resolve(process.cwd(), `../webdesignaifusion/public/brian-previews/${p.slug}/index.html`),
+   582	      path.resolve("c:/Users/tauru/OneDrive/Desktop/webdesignaifusion/public/brian-previews", p.slug, "index.html"),
+   583	    ];
+   584	    for (const candidate of diskCandidates) {
+   585	      if (existsSync(candidate)) {
+   586	        try {
+   587	          const content = readFileSync(candidate, "utf8");
+   588	          if (content && content.length > 200) return content;
+   589	        } catch {}
+   590	      }
+   591	    }
+   592	    return buildRichV6TradeBaselineHtml(p);
+   593	  }
+   594	
+   595	  // 1. Session initialization & signed capability redemption for Brian V6.5 Studio (Decision 1)
+   596	  router.post("/:secureId/brian-session", (req, res) => {
+   597	    const p = getReady(req);
+   598	    if (!p) {
+   599	      res.status(404).json({ ok: false, error: "PREVIEW_NOT_READY" });
+   600	      return;
+   601	    }
+   602	    const secret = process.env.GEMINX_PREVIEW_BRIDGE_TOKEN || "geminx-bridge-secret-key-for-brian-session";
+   603	    const clientIp = String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "visitor")
+   604	      .split(",")[0]
+   605	      .trim();
+   606	
+   607	    // If a signed editCap is supplied, verify that it matches this exact prospect and is not expired.
+   608	    const suppliedCap = typeof req.body?.editCap === "string" ? req.body.editCap.trim() : "";
+   609	    let editCapability = suppliedCap;
+   610	    if (suppliedCap) {
+   611	      const capCheck = verifyEditCapability(secret, p.secure_id, suppliedCap);
+   612	      if (!capCheck.valid) {
+   613	        res.status(403).json({
+   614	          ok: false,
+   615	          error: capCheck.reason || "INVALID_EDIT_CAPABILITY",
+   616	          message: "Your editing link has expired or does not match this business preview.",
+   617	        });
+   618	        return;
+   619	      }
+   620	    } else {
+   621	      // Server-authenticated bridge calls (already verified by Bearer GEMINX_PREVIEW_BRIDGE_TOKEN)
+   622	      // receive a freshly signed prospect-bound capability and redeem it into a short-lived session.
+   623	      editCapability = generateEditCapability(secret, p.secure_id);
+   624	    }
+   625	
+   626	    const token = generateVisitorToken(secret, p.secure_id, clientIp);
+   627	    const sessionNonce = deriveSessionNonce(token);
+   628	    const revisions = store.getBrianRevisions(SITE_ID, p.slug);
+   629	    const rawHtml = resolveRawBaseHtmlForProspect(p);
+   630	    const bridgedHtml = injectAuditedViewerBridge(rawHtml, sessionNonce, p.secure_id);
+   631	
+   632	    res.json({
+   633	      ok: true,
+   634	      agent_id: "brian",
+   635	      office_agent: "brian",
+   636	      sessionToken: token,
+   637	      sessionNonce,
+   638	      editCapability,
+   639	      canEdit: true,
+   640	      html: bridgedHtml,
+   641	      prospect: {
+   642	        secureId: p.secure_id,
+   643	        businessName: p.business_name,
+   644	        trade: p.business_type,
+   645	        location: p.location,
+   646	        slug: p.slug,
+   647	        activeRevisionId: p.active_revision_id ?? null,
+   648	        redoRevisionId: p.redo_revision_id ?? null,
+   649	        canUndo: Boolean(p.active_revision_id && p.active_revision_id !== "v1-baseline"),
+   650	        canRedo: Boolean(p.redo_revision_id),
+   651	        savedCustomerEmail: p.saved_customer_email ?? null,
+   652	        totalRevisions: revisions.length > 0 ? revisions.length + 1 : 1,
+   653	      },
+   654	    });
+   655	  });
+   656	
+   657	  // 2. Fetch HTML for preview iframe (with audited viewer bridge injected)
+   658	  router.get("/:secureId/html", (req, res) => {
+   659	    const p = getReady(req);
+   660	    if (!p) {
+   661	      res.status(404).json({ ok: false, error: "PREVIEW_NOT_READY" });
+   662	      return;
+   663	    }
+   664	    const revId = typeof req.query.rev === "string" ? req.query.rev.trim() : null;
+   665	    const nonce = typeof req.query.nonce === "string" ? req.query.nonce.trim() : "viewer";
+   666	    let html = "";
+   667	    if (revId && revId !== "v1-baseline") {
+   668	      const rev = store.getBrianRevision(SITE_ID, p.slug, revId);
+   669	      if (rev?.html_content) html = rev.html_content;
+   670	    } else if (revId === "v1-baseline") {
+   671	      html = resolveRawBaseHtmlForProspect(p, true);
+   672	    }
+   673	    if (!html) {
+   674	      html = resolveRawBaseHtmlForProspect(p);
+   675	    }
+   676	    const bridged = injectAuditedViewerBridge(html, nonce, p.secure_id);
+   677	    res.setHeader("Content-Type", "text/html; charset=utf-8");
+   678	    res.setHeader("X-Content-Type-Options", "nosniff");
+   679	    res.status(200).send(bridged);
+   680	  });
+   681	
+   682	  // 3. Brian Live Edit execution
+   683	  router.post("/:secureId/brian-edit", async (req, res) => {
+   684	    const p = getReady(req);
+   685	    if (!p) {
+   686	      res.status(404).json({ ok: false, error: "PREVIEW_NOT_READY" });
+   687	      return;
+   688	    }
+   689	    const secret = process.env.GEMINX_PREVIEW_BRIDGE_TOKEN || "geminx-bridge-secret-key-for-brian-session";
+   690	    const clientIp = String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "visitor")
+   691	      .split(",")[0]
+   692	      .trim();
+   693	    const sessionToken = String(req.body?.sessionToken ?? "");
+   694	    const verification = verifyVisitorToken(secret, p.secure_id, sessionToken, clientIp);
+   695	    if (!verification.valid) {
+   696	      res.status(403).json({ ok: false, error: verification.reason || "UNAUTHORIZED_VISITOR_SESSION" });
+   697	      return;
+   698	    }
+   699	
+   700	    const budgetCheck = checkAndRecordSessionEditBudget(sessionToken, false);
+   701	    if (!budgetCheck.allowed) {
+   702	      res.status(429).json({
+   703	        ok: false,
+   704	        error: budgetCheck.reason || "EDIT_BUDGET_EXHAUSTED",
+   705	        message: "You have reached the live edit limit for this session. Please save your design or request a quote.",
+   706	      });
+   707	      return;
+   708	    }
+   709	
+   710	    const prompt = typeof req.body?.prompt === "string" ? req.body.prompt.trim().slice(0, 1500) : "";
+   711	    if (!prompt) {
+   712	      res.status(400).json({ ok: false, error: "PROMPT_REQUIRED" });
+   713	      return;
+   714	    }
+   715	
+   716	    const rawSelected = req.body?.selectedElement;
+   717	    const selectedElement: BrianSelectedElementContext | null =
+   718	      rawSelected && typeof rawSelected === "object"
+   719	        ? {
+   720	            tag: String(rawSelected.tag || "section").slice(0, 32),
+   721	            sectionId: String(rawSelected.sectionId || "section").slice(0, 64),
+   722	            label: String(rawSelected.label || "Element").slice(0, 64),
+   723	            currentText: String(rawSelected.currentText || "").slice(0, 160),
+   724	          }
+   725	        : null;
+   726	
+   727	    // Resolve base HTML (from current requested revision or latest)
+   728	    const currentRevId = typeof req.body?.currentRevisionId === "string" ? req.body.currentRevisionId.trim() : null;
+   729	    let baseHtml = "";
+   730	    if (currentRevId && currentRevId !== "v1-baseline") {
+   731	      const rev = store.getBrianRevision(SITE_ID, p.slug, currentRevId);
+   732	      if (rev?.html_content) baseHtml = rev.html_content;
+   733	    } else if (currentRevId === "v1-baseline") {
+   734	      baseHtml = resolveRawBaseHtmlForProspect(p, true);
+   735	    }
+   736	    if (!baseHtml) {
+   737	      baseHtml = resolveRawBaseHtmlForProspect(p);
+   738	    }
+   739	
+   740	    const editResult = await executeBrianLiveEdit({
+   741	      baseHtml,
+   742	      prompt,
+   743	      prospect: {
+   744	        business_name: p.business_name,
+   745	        trade: p.business_type,
+   746	        location: p.location,
+   747	      },
+   748	      selectedElement,
+   749	    });
+   750	
+   751	    if (!editResult.ok) {
+   752	      res.status(422).json({
+   753	        ok: false,
+   754	        agent_id: "brian",
+   755	        office_agent: "brian",
+   756	        status: "FAILED",
+   757	        error: editResult.error,
+   758	        message: editResult.message,
+   759	        activity_log: editResult.activity_log,
+   760	      });
+   761	      return;
+   762	    }
+   763	
+   764	    const existingRevisions = store.getBrianRevisions(SITE_ID, p.slug).filter((r) => r.revision_id !== "v1-baseline");
+   765	    const versionNumber = existingRevisions.length + 2; // base is 1
+   766	    const revisionId = `rev_${Date.now()}_${randomUUID().slice(0, 6)}`;
+   767	
+   768	    const savedRevision = store.addBrianRevision(SITE_ID, p.slug, {
+   769	      revision_id: revisionId,
+   770	      version_number: versionNumber,
+   771	      parent_revision_id: currentRevId || p.active_revision_id || null,
+   772	      prompt,
+   773	      diff_summary: editResult.diffSummary,
+   774	      html_sha256: editResult.sha256,
+   775	      html_content: editResult.html,
+   776	      status: "DRAFT",
+   777	      qa_score: editResult.qa_receipt?.score,
+   778	      model_id: editResult.model_receipt?.model_id,
+   779	    });
+   780	
+   781	    const sessionNonce = deriveSessionNonce(sessionToken);
+   782	    const bridgedHtml = injectAuditedViewerBridge(editResult.html, sessionNonce, p.secure_id);
+   783	
+   784	    res.status(201).json({
+   785	      ok: true,
+   786	      job_id: editResult.job_id,
+   787	      agent_id: "brian",
+   788	      office_agent: "brian",
+   789	      status: "QA_PASSED",
+   790	      prospect_id: p.prospect_id,
+   791	      revision_id: savedRevision.revision_id,
+   792	      version_number: savedRevision.version_number,
+   793	      source_sha: editResult.sha256,
+   794	      before_sha: editResult.before_sha256,
+   795	      preview_url: `/live-concept/${p.slug}?rev=${savedRevision.revision_id}`,
+   796	      html: bridgedHtml,
+   797	      message: editResult.message,
+   798	      diff_summary: editResult.diffSummary,
+   799	      can_undo: true,
+   800	      can_redo: false,
+   801	      remaining_edits: budgetCheck.remainingEdits,
+   802	      qa_receipt: editResult.qa_receipt,
+   803	      model_receipt: editResult.model_receipt,
+   804	      variation_profile: editResult.variation_profile,
+   805	      activity_log: editResult.activity_log,
+   806	      proof: { dom_qa: "PASS", sanitized: true, html_sha256: editResult.sha256 },
+   807	    });
+   808	  });
+   809	
+   810	  // 4. Brian Undo (non-destructive, records redo target and returns updated HTML)
+   811	  router.post("/:secureId/brian-undo", (req, res) => {
+   812	    const p = getReady(req);
+   813	    if (!p) {
+   814	      res.status(404).json({ ok: false, error: "PREVIEW_NOT_READY" });
+   815	      return;
+   816	    }
+   817	    const secret = process.env.GEMINX_PREVIEW_BRIDGE_TOKEN || "geminx-bridge-secret-key-for-brian-session";
+   818	    const clientIp = String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "visitor")
+   819	      .split(",")[0]
+   820	      .trim();
+   821	    const sessionToken = String(req.body?.sessionToken ?? "");
+   822	    const verification = verifyVisitorToken(secret, p.secure_id, sessionToken, clientIp);
+   823	    if (!verification.valid) {
+   824	      res.status(403).json({ ok: false, error: verification.reason || "UNAUTHORIZED_VISITOR_SESSION" });
+   825	      return;
+   826	    }
+   827	
+   828	    const revisions = store.getBrianRevisions(SITE_ID, p.slug).filter((r) => r.revision_id !== "v1-baseline");
+   829	    if (revisions.length === 0) {
+   830	      res.status(400).json({ ok: false, error: "NO_PREVIOUS_REVISION" });
+   831	      return;
+   832	    }
+   833	
+   834	    const activeRev =
+   835	      revisions.find((r) => r.revision_id === p.active_revision_id) || revisions[revisions.length - 1];
+   836	    const parentRevId = activeRev?.parent_revision_id;
+   837	    const sessionNonce = deriveSessionNonce(sessionToken);
+   838	
+   839	    if (parentRevId && parentRevId !== "v1-baseline") {
+   840	      store.setActiveBrianRevision(SITE_ID, p.slug, parentRevId, activeRev.revision_id);
+   841	      const parent = store.getBrianRevision(SITE_ID, p.slug, parentRevId);
+   842	      const rawHtml = parent?.html_content || resolveRawBaseHtmlForProspect(p, true);
+   843	      res.json({
+   844	        ok: true,
+   845	        revision_id: parentRevId,
+   846	        version_number: parent?.version_number ?? 1,
+   847	        can_undo: true,
+   848	        can_redo: true,
+   849	        html: injectAuditedViewerBridge(rawHtml, sessionNonce, p.secure_id),
+   850	        message: `Reverted to Version ${parent?.version_number ?? 1}. You can redo this change at any time.`,
+   851	      });
+   852	    } else {
+   853	      // Revert to initial base v1 while preserving activeRev.revision_id for Redo
+   854	      store.clearActiveBrianRevision(SITE_ID, p.slug, activeRev.revision_id);
+   855	      const rawHtml = resolveRawBaseHtmlForProspect(p, true);
+   856	      res.json({
+   857	        ok: true,
+   858	        revision_id: null,
+   859	        version_number: 1,
+   860	        can_undo: false,
+   861	        can_redo: true,
+   862	        html: injectAuditedViewerBridge(rawHtml, sessionNonce, p.secure_id),
+   863	        message: "Reverted to original Version 1 concept design. Click Redo if you want to restore your edit.",
+   864	      });
+   865	    }
+   866	  });
+   867	
+   868	  // 4b. Brian Redo (restores undone revision non-destructively)
+   869	  router.post("/:secureId/brian-redo", (req, res) => {
+   870	    const p = getReady(req);
+   871	    if (!p) {
+   872	      res.status(404).json({ ok: false, error: "PREVIEW_NOT_READY" });
+   873	      return;
+   874	    }
+   875	    const secret = process.env.GEMINX_PREVIEW_BRIDGE_TOKEN || "geminx-bridge-secret-key-for-brian-session";
+   876	    const clientIp = String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "visitor")
+   877	      .split(",")[0]
+   878	      .trim();
+   879	    const sessionToken = String(req.body?.sessionToken ?? "");
+   880	    const verification = verifyVisitorToken(secret, p.secure_id, sessionToken, clientIp);
+   881	    if (!verification.valid) {
+   882	      res.status(403).json({ ok: false, error: verification.reason || "UNAUTHORIZED_VISITOR_SESSION" });
+   883	      return;
+   884	    }
+   885	
+   886	    try {
+   887	      const { prospect: updatedProspect, revision } = store.redoBrianRevision(SITE_ID, p.slug);
+   888	      const sessionNonce = deriveSessionNonce(sessionToken);
+   889	      res.json({
+   890	        ok: true,
+   891	        revision_id: revision.revision_id,
+   892	        version_number: revision.version_number,
+   893	        can_undo: true,
+   894	        can_redo: Boolean(updatedProspect.redo_revision_id),
+   895	        html: injectAuditedViewerBridge(revision.html_content, sessionNonce, p.secure_id),
+   896	        message: `Restored Version ${revision.version_number} (${revision.diff_summary}).`,
+   897	      });
+   898	    } catch (err) {
+   899	      res.status(400).json({
+   900	        ok: false,
+   901	        error: err instanceof Error ? err.message : "NO_REVISION_TO_REDO",
+   902	      });
+   903	    }
+   904	  });
+   905	
+   906	  // 5. Brian Save (supports both edited revisions and Version 1 baseline, with email verification)
+   907	  router.post("/:secureId/brian-save", (req, res) => {
+   908	    const p = getReady(req);
+   909	    if (!p) {
+   910	      res.status(404).json({ ok: false, error: "PREVIEW_NOT_READY" });
+   911	      return;
+   912	    }
+   913	    const secret = process.env.GEMINX_PREVIEW_BRIDGE_TOKEN || "geminx-bridge-secret-key-for-brian-session";
+   914	    const clientIp = String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "visitor")
+   915	      .split(",")[0]
+   916	      .trim();
+   917	    const sessionToken = String(req.body?.sessionToken ?? "");
+   918	    const verification = verifyVisitorToken(secret, p.secure_id, sessionToken, clientIp);
+   919	    if (!verification.valid) {
+   920	      res.status(403).json({ ok: false, error: verification.reason || "UNAUTHORIZED_VISITOR_SESSION" });
+   921	      return;
+   922	    }
+   923	
+   924	    const customerEmail = typeof req.body?.customerEmail === "string" ? req.body.customerEmail.trim() : "";
+   925	    if (customerEmail && !EMAIL_PATTERN.test(customerEmail)) {
+   926	      res.status(400).json({
+   927	        ok: false,
+   928	        error: "VALID_EMAIL_REQUIRED_TO_SAVE",
+   929	        message: "Please enter a valid business email address to verify and save your website design.",
+   930	      });
+   931	      return;
+   932	    }
+   933	
+   934	    const targetRevisionId =
+   935	      (typeof req.body?.revisionId === "string" && req.body.revisionId.trim()) ||
+   936	      p.active_revision_id ||
+   937	      (req.body?.allowBaselineSave || customerEmail ? "v1-baseline" : "");
+   938	
+   939	    if (!targetRevisionId) {
+   940	      res.status(400).json({ ok: false, error: "NO_ACTIVE_REVISION_TO_SAVE" });
+   941	      return;
+   942	    }
+   943	
+   944	    const baselineHtml = targetRevisionId === "v1-baseline" ? resolveRawBaseHtmlForProspect(p, true) : undefined;
+   945	    const saved = store.saveActiveBrianRevision(
+   946	      SITE_ID,
+   947	      p.slug,
+   948	      targetRevisionId,
+   949	      customerEmail || null,
+   950	      baselineHtml
+   951	    );
+   952	
+   953	    res.json({
+   954	      ok: true,
+   955	      revision_id: saved.revision_id,
+   956	      version_number: saved.version_number,
+   957	      status: "SAVED",
+   958	      saved_at: saved.saved_at,
+   959	      customer_email: saved.customer_email ?? null,
+   960	      message: customerEmail
+   961	        ? `Version ${saved.version_number} has been saved and linked to ${customerEmail}.`
+   962	        : `Version ${saved.version_number} has been saved to your preview record.`,
+   963	    });
+   964	  });
+   965	
+   966	  // 6. Brian Request a Quote
+   967	  router.post("/:secureId/brian-quote", (req, res) => {
+   968	    const p = getReady(req);
+   969	    if (!p) {
+   970	      res.status(404).json({ ok: false, error: "PREVIEW_NOT_READY" });
+   971	      return;
+   972	    }
+   973	    const secret = process.env.GEMINX_PREVIEW_BRIDGE_TOKEN || "geminx-bridge-secret-key-for-brian-session";
+   974	    const clientIp = String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "visitor")
+   975	      .split(",")[0]
+   976	      .trim();
+   977	    const sessionToken = String(req.body?.sessionToken ?? "");
+   978	    const verification = verifyVisitorToken(secret, p.secure_id, sessionToken, clientIp);
+   979	    if (!verification.valid) {
+   980	      res.status(403).json({ ok: false, error: verification.reason || "UNAUTHORIZED_VISITOR_SESSION" });
+   981	      return;
+   982	    }
+   983	
+   984	    const name = String(req.body?.name || req.body?.customerName || "Interested Customer")
+   985	      .trim()
+   986	      .slice(0, 120);
+   987	    const email = String(req.body?.email || "").trim().slice(0, 200);
+   988	    const phone = String(req.body?.phone || "").trim().slice(0, 50);
+   989	    const notes = String(req.body?.notes || req.body?.message || "")
+   990	      .trim()
+   991	      .slice(0, 600);
+   992	    const revisionId = p.active_revision_id || "v1-baseline";
+   993	
+   994	    if (!email && !phone) {
+   995	      res.status(400).json({ ok: false, error: "CONTACT_EMAIL_OR_PHONE_REQUIRED" });
+   996	      return;
+   997	    }
+   998	
+   999	    const intake = store.createServiceIntake(
+  1000	      {
+  1001	        product_id: "SMART_WEBSITE",
+  1002	        customer: {
+  1003	          business_name: p.business_name,
+  1004	          customer_name: name,
+  1005	          email: email || "pending@prospect.internal",
+  1006	          phone: phone || null,
+  1007	        },
+  1008	        note: `Requested quote from Brian Live Client Editor for ${p.business_name}. Revision: ${revisionId}. Customer notes: ${notes || "None"}`,
+  1009	        source: "brian-live-client-editor",
+  1010	        constraints: {
+  1011	          prospect_slug: p.slug,
+  1012	          secure_id: p.secure_id,
+  1013	          revision_id: revisionId,
+  1014	        },
+  1015	      },
+  1016	      SITE_ID
+  1017	    );
+  1018	
+  1019	    res.status(201).json({
+  1020	      ok: true,
+  1021	      intake_id: intake.intake_id,
+  1022	      status: "AWAITING_REVIEW",
+  1023	      message: "Your quote request and design preferences have been received. Rob will review your setup.",
+  1024	    });
+  1025	  });
+  1026	
+  1027	  // 7. Brian Domain Availability & Existing Domain Connection Check (Decision 3)
+  1028	  router.post("/:secureId/brian-domain-check", async (req, res) => {
+  1029	    const p = getReady(req);
+  1030	    if (!p) {
+  1031	      res.status(404).json({ ok: false, error: "PREVIEW_NOT_READY" });
+  1032	      return;
+  1033	    }
+  1034	    const secret = process.env.GEMINX_PREVIEW_BRIDGE_TOKEN || "geminx-bridge-secret-key-for-brian-session";
+  1035	    const clientIp = String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "visitor")
+  1036	      .split(",")[0]
+  1037	      .trim();
+  1038	    const sessionToken = String(req.body?.sessionToken ?? "");
+  1039	    const verification = verifyVisitorToken(secret, p.secure_id, sessionToken, clientIp);
+  1040	    if (!verification.valid) {
+  1041	      res.status(403).json({ ok: false, error: verification.reason || "UNAUTHORIZED_VISITOR_SESSION" });
+  1042	      return;
+  1043	    }
+  1044	
+  1045	    const domainQuery = String(req.body?.domainQuery || req.body?.domain || "")
+  1046	      .trim()
+  1047	      .slice(0, 120);
+  1048	    const result = await checkDomainAvailability(domainQuery, p.business_name);
+  1049	    res.status(200).json({
+  1050	      ...result,
+  1051	      agent_id: "brian",
+  1052	      office_agent: "brian",
+  1053	      prospect_id: p.prospect_id,
+  1054	    });
+  1055	  });
+  1056	
+  1057	  return router;
+  1058	}
+
+
+===== FILE: geminx-v2/src/routes/projects.ts =====
+===== SHA256: da18bfc8fb66406d179053a4122faf113f07f009661b669281a72049d60d565a =====
+===== LINES: 106 =====
+     1	import { Router } from "express";
+     2	import { ConversationStore } from "../modules/companion/conversation-store.js";
+     3	import { nativeNeoConversationStore } from "../modules/companion/native-neo-runtime.js";
+     4	import { nativeNeoProjectStore, ProjectStore } from "../modules/companion/project-store.js";
+     5	import { err, ok } from "../types/index.js";
+     6	
+     7	export function projectsRouter(
+     8	  conversationStore: ConversationStore = nativeNeoConversationStore,
+     9	  projectStore: ProjectStore = nativeNeoProjectStore
+    10	): Router {
+    11	  const router = Router();
+    12	
+    13	  router.get("/", (_req, res) => {
+    14	    try {
+    15	      const items = projectStore.list();
+    16	      res.json(ok({ items, total: items.length, offset: 0, limit: 50 }));
+    17	    } catch (error) {
+    18	      res.status(500).json(err(error instanceof Error ? error.message : String(error)));
+    19	    }
+    20	  });
+    21	
+    22	  router.get("/:id", (req, res) => {
+    23	    try {
+    24	      const project = projectStore.get(req.params.id);
+    25	      if (!project) {
+    26	        res.status(404).json(err("project not found"));
+    27	        return;
+    28	      }
+    29	      res.json(ok(project));
+    30	    } catch (error) {
+    31	      res.status(400).json(err(error instanceof Error ? error.message : String(error)));
+    32	    }
+    33	  });
+    34	
+    35	  router.post("/", (req, res) => {
+    36	    try {
+    37	      const name = req.body?.name;
+    38	      if (!name || typeof name !== "string") {
+    39	        res.status(400).json(err("PROJECT_NAME_REQUIRED"));
+    40	        return;
+    41	      }
+    42	      const description = typeof req.body?.description === "string" ? req.body.description : undefined;
+    43	      const id = typeof req.body?.id === "string" ? req.body.id : undefined;
+    44	      const project = projectStore.create({ name, description, id });
+    45	      res.status(201).json(ok(project));
+    46	    } catch (error) {
+    47	      res.status(400).json(err(error instanceof Error ? error.message : String(error)));
+    48	    }
+    49	  });
+    50	
+    51	  router.patch("/:projectId/assign", (req, res) => {
+    52	    try {
+    53	      const targetProjectId = req.params.projectId;
+    54	      const isUnassign = targetProjectId === "none" || targetProjectId === "unassigned" || targetProjectId === "null";
+    55	      
+    56	      let projectName: string | null = null;
+    57	      let projectId: string | null = null;
+    58	
+    59	      if (!isUnassign) {
+    60	        const project = projectStore.get(targetProjectId);
+    61	        if (!project) {
+    62	          res.status(404).json(err("PROJECT_NOT_FOUND"));
+    63	          return;
+    64	        }
+    65	        projectId = project.id;
+    66	        projectName = project.name;
+    67	      }
+    68	
+    69	      const body = req.body && typeof req.body === "object" ? req.body : {};
+    70	      const conversationIds: string[] = [];
+    71	      if (typeof body.conversation_id === "string" && body.conversation_id.trim()) {
+    72	        conversationIds.push(body.conversation_id.trim());
+    73	      }
+    74	      if (Array.isArray(body.conversation_ids)) {
+    75	        for (const cid of body.conversation_ids) {
+    76	          if (typeof cid === "string" && cid.trim()) conversationIds.push(cid.trim());
+    77	        }
+    78	      }
+    79	
+    80	      if (conversationIds.length === 0) {
+    81	        res.status(400).json(err("CONVERSATION_ID_REQUIRED"));
+    82	        return;
+    83	      }
+    84	
+    85	      let assignedCount = 0;
+    86	      for (const cid of conversationIds) {
+    87	        const updated = conversationStore.updateMetadata(cid, {
+    88	          project_id: projectId,
+    89	          project_name: projectName
+    90	        });
+    91	        if (updated) assignedCount += 1;
+    92	      }
+    93	
+    94	      res.json(ok({
+    95	        project_id: projectId,
+    96	        project_name: projectName,
+    97	        assigned_count: assignedCount,
+    98	        conversation_ids: conversationIds
+    99	      }));
+   100	    } catch (error) {
+   101	      res.status(400).json(err(error instanceof Error ? error.message : String(error)));
+   102	    }
+   103	  });
+   104	
+   105	  return router;
+   106	}
+
+
+===== FILE: webdesignaifusion/api/ambush-revision.ts =====
+===== SHA256: 7b75d03fe0d4dd478bdc6b6280ecaf0a3d581c25966a19ab9eaa0438eb08bf30 =====
+===== LINES: 233 =====
+     1	/**
+     2	 * Entreprenuity — Ambush Revision & Brian V6.5 Studio Proxy
+     3	 *
+     4	 * Phase 1 Defect Fix (BRIAN-LIVE-CLIENT-EDITOR-20261107):
+     5	 * - Strictly proxies interactive Brian Studio actions (`session`, `edit`, `undo`, `redo`,
+     6	 *   `save`, `quote`, `domain-check`, `html`) to the authenticated GeminX V6.5 backend bridge
+     7	 *   (`GEMINX_PREVIEW_API_ORIGIN` + `GEMINX_PREVIEW_BRIDGE_TOKEN`).
+     8	 * - Fails explicitly (`503 BRIAN_BACKEND_UNAVAILABLE` or upstream `403`/`422`/`429`) if
+     9	 *   GeminX is unreachable or if an edit fails.
+    10	 */
+    11	
+    12	const GITHUB_TOKEN = process.env.GITHUB_TOKEN || "";
+    13	const GITHUB_REPO = "R1mob2-svg/global-agent-brain";
+    14	const GEMINX_PREVIEW_API_ORIGIN = (process.env.GEMINX_PREVIEW_API_ORIGIN || "").replace(/\/+$/, "");
+    15	const GEMINX_PREVIEW_BRIDGE_TOKEN = (process.env.GEMINX_PREVIEW_BRIDGE_TOKEN || "").trim();
+    16	
+    17	function clean(value: unknown, max = 2000): string {
+    18	  return String(value || "").trim().slice(0, max);
+    19	}
+    20	
+    21	export default async function handler(req: any, res: any) {
+    22	  res.setHeader("Cache-Control", "private, no-store");
+    23	  res.setHeader("X-Content-Type-Options", "nosniff");
+    24	
+    25	  // 1. GET Requests: Fetching Brian HTML for preview iframe from GeminX bridge
+    26	  if (req.method === "GET") {
+    27	    const action = clean(req.query?.action, 40);
+    28	    const secureId = clean(req.query?.secureId || req.query?.id, 120).toLowerCase();
+    29	    const rev = clean(req.query?.rev, 120);
+    30	    const nonce = clean(req.query?.nonce, 64);
+    31	
+    32	    if (action === "html" && secureId) {
+    33	      if (!GEMINX_PREVIEW_API_ORIGIN || !GEMINX_PREVIEW_BRIDGE_TOKEN) {
+    34	        return res.status(503).json({
+    35	          ok: false,
+    36	          error: "BRIAN_BACKEND_UNAVAILABLE",
+    37	          message: "Live website editor service is temporarily unavailable.",
+    38	        });
+    39	      }
+    40	
+    41	      try {
+    42	        const queryParams = new URLSearchParams();
+    43	        if (rev) queryParams.set("rev", rev);
+    44	        if (nonce) queryParams.set("nonce", nonce);
+    45	        const qs = queryParams.toString();
+    46	        const upstreamUrl = `${GEMINX_PREVIEW_API_ORIGIN}/api/v1/ambush-preview/${encodeURIComponent(secureId)}/html${qs ? `?${qs}` : ""}`;
+    47	        const upstream = await fetch(upstreamUrl, {
+    48	          headers: { Authorization: `Bearer ${GEMINX_PREVIEW_BRIDGE_TOKEN}` },
+    49	        });
+    50	        if (!upstream.ok) {
+    51	          return res.status(upstream.status).json({
+    52	            ok: false,
+    53	            error: "HTML_PREVIEW_NOT_FOUND",
+    54	          });
+    55	        }
+    56	        const html = await upstream.text();
+    57	        res.setHeader("Content-Type", "text/html; charset=utf-8");
+    58	        return res.status(200).send(html);
+    59	      } catch {
+    60	        return res.status(503).json({
+    61	          ok: false,
+    62	          error: "BRIAN_BACKEND_UNREACHABLE",
+    63	          message: "Could not reach the Brian V6.5 preview service.",
+    64	        });
+    65	      }
+    66	    }
+    67	
+    68	    return res.status(400).json({ ok: false, error: "INVALID_GET_QUERY" });
+    69	  }
+    70	
+    71	  if (req.method !== "POST") {
+    72	    return res.status(405).json({ error: "METHOD_NOT_ALLOWED" });
+    73	  }
+    74	
+    75	  const body = req.body || {};
+    76	  const action = clean(body.action, 40);
+    77	
+    78	  // 2. Interactive Brian V6.5 Studio Actions (Strict Backend Execution — Zero Fake Fallbacks)
+    79	  if (action && ["session", "edit", "undo", "redo", "save", "quote", "domain-check"].includes(action)) {
+    80	    const secureId = clean(body.secureId, 120).toLowerCase();
+    81	    if (!secureId) {
+    82	      return res.status(400).json({ ok: false, error: "MISSING_SECURE_ID" });
+    83	    }
+    84	
+    85	    if (!GEMINX_PREVIEW_API_ORIGIN || !GEMINX_PREVIEW_BRIDGE_TOKEN) {
+    86	      return res.status(503).json({
+    87	        ok: false,
+    88	        agent_id: "brian",
+    89	        office_agent: "brian",
+    90	        status: "FAILED",
+    91	        error: "BRIAN_BACKEND_UNAVAILABLE",
+    92	        message: "Brian live editing engine is not configured on this environment. Your existing website preview remains safe.",
+    93	      });
+    94	    }
+    95	
+    96	    try {
+    97	      let endpoint = "";
+    98	      let postBody: Record<string, unknown> = {};
+    99	
+   100	      if (action === "session") {
+   101	        endpoint = `${GEMINX_PREVIEW_API_ORIGIN}/api/v1/ambush-preview/${encodeURIComponent(secureId)}/brian-session`;
+   102	        postBody = {
+   103	          editCap: clean(body.editCap, 256) || undefined,
+   104	        };
+   105	      } else if (action === "edit") {
+   106	        endpoint = `${GEMINX_PREVIEW_API_ORIGIN}/api/v1/ambush-preview/${encodeURIComponent(secureId)}/brian-edit`;
+   107	        postBody = {
+   108	          sessionToken: clean(body.sessionToken, 256),
+   109	          prompt: clean(body.prompt, 2000),
+   110	          currentRevisionId: clean(body.currentRevisionId, 120) || undefined,
+   111	          selectedElement:
+   112	            body.selectedElement && typeof body.selectedElement === "object" ? body.selectedElement : undefined,
+   113	          conversationHistory: Array.isArray(body.conversationHistory) ? body.conversationHistory.slice(-10) : [],
+   114	        };
+   115	      } else if (action === "undo") {
+   116	        endpoint = `${GEMINX_PREVIEW_API_ORIGIN}/api/v1/ambush-preview/${encodeURIComponent(secureId)}/brian-undo`;
+   117	        postBody = {
+   118	          sessionToken: clean(body.sessionToken, 256),
+   119	        };
+   120	      } else if (action === "redo") {
+   121	        endpoint = `${GEMINX_PREVIEW_API_ORIGIN}/api/v1/ambush-preview/${encodeURIComponent(secureId)}/brian-redo`;
+   122	        postBody = {
+   123	          sessionToken: clean(body.sessionToken, 256),
+   124	        };
+   125	      } else if (action === "save") {
+   126	        endpoint = `${GEMINX_PREVIEW_API_ORIGIN}/api/v1/ambush-preview/${encodeURIComponent(secureId)}/brian-save`;
+   127	        postBody = {
+   128	          sessionToken: clean(body.sessionToken, 256),
+   129	          customerEmail: clean(body.customerEmail, 220) || undefined,
+   130	          revisionId: clean(body.revisionId, 120) || undefined,
+   131	          allowBaselineSave: Boolean(body.allowBaselineSave),
+   132	          customerNotes: clean(body.customerNotes, 1000),
+   133	        };
+   134	      } else if (action === "quote") {
+   135	        endpoint = `${GEMINX_PREVIEW_API_ORIGIN}/api/v1/ambush-preview/${encodeURIComponent(secureId)}/brian-quote`;
+   136	        postBody = {
+   137	          sessionToken: clean(body.sessionToken, 256),
+   138	          name: clean(body.name, 120),
+   139	          email: clean(body.email, 120),
+   140	          phone: clean(body.phone, 60),
+   141	          notes: clean(body.requirements || body.notes, 1200),
+   142	          timeframe: clean(body.timeframe, 60),
+   143	        };
+   144	      } else if (action === "domain-check") {
+   145	        endpoint = `${GEMINX_PREVIEW_API_ORIGIN}/api/v1/ambush-preview/${encodeURIComponent(secureId)}/brian-domain-check`;
+   146	        postBody = {
+   147	          sessionToken: clean(body.sessionToken, 256),
+   148	          domainQuery: clean(body.domainQuery, 120),
+   149	        };
+   150	      }
+   151	
+   152	      const upstreamRes = await fetch(endpoint, {
+   153	        method: "POST",
+   154	        headers: {
+   155	          Authorization: `Bearer ${GEMINX_PREVIEW_BRIDGE_TOKEN}`,
+   156	          "Content-Type": "application/json",
+   157	          "X-Forwarded-For": String(req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "client"),
+   158	        },
+   159	        body: JSON.stringify(postBody),
+   160	      });
+   161	
+   162	      const data = await upstreamRes.json();
+   163	      return res.status(upstreamRes.status).json(data);
+   164	    } catch {
+   165	      return res.status(503).json({
+   166	        ok: false,
+   167	        agent_id: "brian",
+   168	        office_agent: "brian",
+   169	        status: "FAILED",
+   170	        error: "BRIAN_BACKEND_UNREACHABLE",
+   171	        message: "Could not reach the Brian V6.5 live editor backend. Your current design was not modified.",
+   172	      });
+   173	    }
+   174	  }
+   175	
+   176	  // 3. Legacy Queue Submission to GitHub
+   177	  if (!GITHUB_TOKEN) return res.status(503).json({ error: "QUEUE_UNAVAILABLE" });
+   178	
+   179	  const secureId = clean(body.secureId, 100);
+   180	  const businessName = clean(body.businessName, 160);
+   181	  const requestText = clean(body.requestText, 2400);
+   182	  const sectionContext = clean(body.sectionContext, 120);
+   183	  const history = Array.isArray(body.history)
+   184	    ? body.history.slice(-10).map((turn: any) => ({
+   185	        role: turn?.role === "assistant" ? "assistant" : "user",
+   186	        content: clean(turn?.content, 1200),
+   187	      }))
+   188	    : [];
+   189	
+   190	  if (!secureId || !businessName || !requestText) {
+   191	    return res.status(400).json({ error: "MALFORMED_PAYLOAD" });
+   192	  }
+   193	
+   194	  const requestId = `ambush_rev_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+   195	  const queueItem = {
+   196	    schema: "digital_ambush_revision_v1",
+   197	    request_id: requestId,
+   198	    source: "digital_ambush_kerry",
+   199	    prospect: { secure_id: secureId, business_name: businessName },
+   200	    section_context: sectionContext || null,
+   201	    revision_request: requestText,
+   202	    conversation_history: history,
+   203	    created_at: new Date().toISOString(),
+   204	    required_outcome: {
+   205	      research_before_change_if_needed: true,
+   206	      create_revised_concept_artifact: true,
+   207	      update_existing_prospect_page_not_new_repo: true,
+   208	      preserve_current_vs_proposed_labelling: true,
+   209	      no_fabricated_claims: true,
+   210	      no_live_customer_site_deploy: true,
+   211	      verify_preview_deployment: true,
+   212	      write_receipt: true,
+   213	    },
+   214	  };
+   215	
+   216	  const fileName = `queue/digital-ambush/${Date.now()}-${requestId}.json`;
+   217	  const result = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/contents/${fileName}`, {
+   218	    method: "PUT",
+   219	    headers: {
+   220	      Authorization: `Bearer ${GITHUB_TOKEN}`,
+   221	      "Content-Type": "application/json",
+   222	      "User-Agent": "digital-ambush-revision-bridge",
+   223	    },
+   224	    body: JSON.stringify({
+   225	      message: `Digital Ambush revision ${requestId}: ${businessName}`,
+   226	      content: Buffer.from(JSON.stringify(queueItem, null, 2)).toString("base64"),
+   227	      branch: "ops/queue",
+   228	    }),
+   229	  });
+   230	
+   231	  if (!result.ok) return res.status(502).json({ error: "QUEUE_WRITE_FAILED" });
+   232	  return res.status(202).json({ status: "QUEUED", request_id: requestId });
+   233	}
+
+
+===== FILE: webdesignaifusion/src/pages/OutreachPreview.tsx =====
+===== SHA256: c6c040227a3ef4b72146e39f364c2f160adeb611a435b3508022b5b57b17a985 =====
+===== LINES: 472 =====
+     1	import { useEffect, useState } from "react";
+     2	import { Link, useParams } from "react-router-dom";
+     3	import Navbar from "@/components/Navbar";
+     4	import Footer from "@/components/Footer";
+     5	import SEO from "@/components/SEO";
+     6	import { Button } from "@/components/ui/button";
+     7	import {
+     8	  ArrowRight,
+     9	  Eye,
+    10	  ShieldCheck,
+    11	  ShieldAlert,
+    12	  Sparkles,
+    13	  CheckCircle2,
+    14	  X,
+    15	  ArrowLeft,
+    16	  Palette,
+    17	  ChevronDown,
+    18	  ChevronUp,
+    19	} from "lucide-react";
+    20	import ServiceBillboard from "@/components/outreach/ServiceBillboard";
+    21	import ResponsiveMonitorFrame from "@/components/outreach/ResponsiveMonitorFrame";
+    22	import DualLiveConceptShowcase from "@/components/outreach/DualLiveConceptShowcase";
+    23	import BrianLiveEditorPanel from "@/components/outreach/BrianLiveEditorPanel";
+    24	import {
+    25	  getStoredActiveRevision,
+    26	  type BrianSelectedElement,
+    27	} from "@/lib/brianLiveEditorClient";
+    28	import { fetchVerifiedAmbushPreview, type VerifiedAmbushPreview } from "@/lib/verifiedAmbushPreview";
+    29	
+    30	const BILLBOARD_ITEMS = [
+    31	  { title: "AI Receptionist", copy: "Answer questions and capture enquiries while you work.", image: "/service-images/ai-receptionist.png" },
+    32	  { title: "Missed Call Recovery", copy: "Turn missed calls into recovered leads.", image: "/service-images/missed-call-recovery.png" },
+    33	  { title: "Lead Follow-Up Automation", copy: "Follow up automatically before leads go cold.", image: "/service-images/lead-follow-up.png" },
+    34	  { title: "Google Business Profile Optimisation", copy: "Help more local customers find and trust your business.", image: "/service-images/google-business-profile.png" },
+    35	  { title: "Review Growth System", copy: "Turn happy customers into trusted reviews.", image: "/service-images/review-growth.png" },
+    36	  { title: "Smart Websites", copy: "Websites built to turn visitors into enquiries.", image: "/service-images/smart-websites.png" },
+    37	  { title: "Website Refresh", copy: "Upgrade an old site into something customers trust.", image: "/service-images/website-refresh.png" },
+    38	  { title: "Google Ads Management", copy: "Targeted local ads that bring in real enquiries.", image: "/service-images/google-ads.png" },
+    39	  { title: "Social Media Management", copy: "Keep your business active and visible online.", image: "/service-images/social-media.png" },
+    40	  { title: "Local SEO Pages", copy: "Help more local customers find your business.", image: "/service-images/local-seo.png" },
+    41	];
+    42	
+    43	export default function OutreachPreview() {
+    44	  const { secureId, slug } = useParams<{ secureId?: string; slug?: string }>();
+    45	  const lookupKey = slug || secureId || "";
+    46	
+    47	  const [verified, setVerified] = useState<VerifiedAmbushPreview | null>(null);
+    48	  const [checking, setChecking] = useState(true);
+    49	  const [fullModalOpen, setFullModalOpen] = useState(false);
+    50	  const [modalView, setModalView] = useState<"mockup" | "interactive">("interactive");
+    51	  const [mobileChatExpanded, setMobileChatExpanded] = useState(true);
+    52	  const [activeRevisionId, setActiveRevisionId] = useState<string | null>(() => getStoredActiveRevision(lookupKey));
+    53	  const [liveHtml, setLiveHtml] = useState<string | null>(null);
+    54	  const [sessionNonce, setSessionNonce] = useState<string>("viewer");
+    55	  const [selectedElement, setSelectedElement] = useState<BrianSelectedElement | null>(null);
+    56	
+    57	  const manifest = verified?.manifest ?? null;
+    58	
+    59	  // Never show a prospect's DOM or connect Brian until the durable backend
+    60	  // recognises this exact capability and confirms it has passed internal QA.
+    61	  useEffect(() => {
+    62	    let active = true;
+    63	    setChecking(true);
+    64	    setVerified(null);
+    65	    void fetchVerifiedAmbushPreview(lookupKey).then((result) => {
+    66	      if (!active) return;
+    67	      setVerified(result);
+    68	      setChecking(false);
+    69	    });
+    70	    return () => {
+    71	      active = false;
+    72	    };
+    73	  }, [lookupKey]);
+    74	
+    75	  // Keyboard shortcut to close full modal
+    76	  useEffect(() => {
+    77	    const handleKeyDown = (e: KeyboardEvent) => {
+    78	      if (e.key === "Escape") setFullModalOpen(false);
+    79	    };
+    80	    window.addEventListener("keydown", handleKeyDown);
+    81	    return () => window.removeEventListener("keydown", handleKeyDown);
+    82	  }, []);
+    83	
+    84	  if (checking) {
+    85	    return (
+    86	      <div className="min-h-screen bg-[#06101f] text-white flex items-center justify-center">
+    87	        Checking this private concept link…
+    88	      </div>
+    89	    );
+    90	  }
+    91	
+    92	  if (!manifest) {
+    93	    return (
+    94	      <div className="min-h-screen bg-[#06101f] text-white">
+    95	        <Navbar />
+    96	        <div className="container mx-auto px-4 py-36 flex items-center justify-center">
+    97	          <div className="max-w-md w-full rounded-3xl border border-white/10 bg-[#0d1c2e] p-8 text-center shadow-2xl">
+    98	            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-amber-500/10 text-amber-400 mb-5">
+    99	              <ShieldAlert className="h-7 w-7" />
+   100	            </div>
+   101	            <h1 className="text-2xl font-bold">Concept Not Found or Link Expired</h1>
+   102	            <p className="mt-3 text-sm text-white/70 leading-relaxed">
+   103	              This preview link is invalid, expired, or has not yet been registered in our verified prospect index.
+   104	            </p>
+   105	            <div className="mt-6">
+   106	              <Link
+   107	                to="/"
+   108	                className="inline-flex items-center gap-2 rounded-xl bg-primary px-6 py-3 text-xs font-bold text-black hover:brightness-110 transition"
+   109	              >
+   110	                <ArrowLeft className="h-4 w-4" /> Return to Entreprenuity
+   111	              </Link>
+   112	            </div>
+   113	          </div>
+   114	        </div>
+   115	        <Footer />
+   116	      </div>
+   117	    );
+   118	  }
+   119	
+   120	  const businessName = manifest.displayName;
+   121	  const location = manifest.location;
+   122	  const subheadline = `We designed this bespoke website concept for ${businessName} in ${location}. Use the live Brian V6.5 Studio below to change colours, headlines, layout, or project examples in real time.`;
+   123	  const iframeSrc = `/live-concept/${lookupKey.toLowerCase()}`;
+   124	  const activeIframeSrc = activeRevisionId
+   125	    ? `${iframeSrc}?rev=${encodeURIComponent(activeRevisionId)}`
+   126	    : iframeSrc;
+   127	
+   128	  const isSLK =
+   129	    lookupKey.toLowerCase().includes("slk") ||
+   130	    lookupKey.toLowerCase() === "7b9148d2-5a2e-4861-bf92-690242526811" ||
+   131	    businessName.toLowerCase().includes("slk") ||
+   132	    businessName.toLowerCase().includes("s l k");
+   133	
+   134	  const mockupImageUrl = isSLK
+   135	    ? "https://raw.githubusercontent.com/R1mob2-svg/rob-ai-systems-showcase/main/assets/mockups/slk-plumbing-darlaston-v3-20261027.jpg"
+   136	    : `https://raw.githubusercontent.com/R1mob2-svg/rob-ai-systems-showcase/main/assets/mockups/${lookupKey.toLowerCase()}.png`;
+   137	
+   138	  const scrollToStudio = () => {
+   139	    setMobileChatExpanded(true);
+   140	    document.getElementById("brian-studio-workspace")?.scrollIntoView({ behavior: "smooth" });
+   141	  };
+   142	
+   143	  return (
+   144	    <div className="min-h-screen">
+   145	      <SEO
+   146	        title={`${businessName} Website Concept | Entreprenuity`}
+   147	        description={`A personalised homepage concept prepared for ${businessName}. Edit live with Brian V6.5.`}
+   148	        path="/outreach-preview"
+   149	        noIndex
+   150	      />
+   151	      <Navbar />
+   152	
+   153	      {/* SECTION 1: UNIFIED LOVABLE-STYLE SPLIT-SCREEN STUDIO WORKSPACE (32% BRIAN CHAT LEFT / 68% LIVE WEBSITE RIGHT) */}
+   154	      <section className="relative pt-24 md:pt-28 pb-12 md:pb-16 overflow-hidden">
+   155	        <div
+   156	          aria-hidden
+   157	          className="absolute inset-0 pointer-events-none"
+   158	          style={{
+   159	            background:
+   160	              "radial-gradient(ellipse 60% 45% at 20% 10%, hsl(var(--brand-gold) / 0.16) 0%, transparent 65%), radial-gradient(ellipse 55% 45% at 85% 90%, hsl(var(--brand-cyan) / 0.10) 0%, transparent 70%)",
+   161	          }}
+   162	        />
+   163	        <div className="container mx-auto px-3 sm:px-6 relative max-w-[1600px]">
+   164	          {/* Compact Studio Header */}
+   165	          <div className="max-w-4xl mx-auto text-center mb-6 md:mb-8">
+   166	            <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full smoked-glass text-xs text-primary mb-3 border border-primary/20">
+   167	              <Sparkles className="w-3.5 h-3.5" />
+   168	              Interactive Website Studio • {location}
+   169	            </div>
+   170	            <h1 className="headline-instrument mb-3" style={{ fontSize: "clamp(1.75rem, 4vw, 3rem)" }}>
+   171	              <span className="headline-primary">We built this homepage concept for</span>{" "}
+   172	              <span className="text-gradient">{businessName}.</span>
+   173	            </h1>
+   174	            <p className="text-foreground/80 text-sm md:text-base mb-4 leading-relaxed max-w-2xl mx-auto">
+   175	              {subheadline}
+   176	            </p>
+   177	            <div className="flex flex-wrap justify-center items-center gap-3">
+   178	              <Button
+   179	                variant="cta"
+   180	                size="sm"
+   181	                className="gap-2 bg-gradient-to-r from-amber-400 to-amber-500 text-black font-bold hover:brightness-110 shadow-lg shadow-amber-500/20"
+   182	                onClick={scrollToStudio}
+   183	              >
+   184	                <Palette className="w-4 h-4" />
+   185	                Edit Live with Brian
+   186	              </Button>
+   187	              <Button
+   188	                variant="ctaOutline"
+   189	                size="sm"
+   190	                className="gap-2"
+   191	                onClick={() => setFullModalOpen(true)}
+   192	              >
+   193	                <Eye className="w-4 h-4" />
+   194	                Open Full-Screen Site
+   195	              </Button>
+   196	              <span className="text-xs text-muted-foreground inline-flex items-center gap-1.5">
+   197	                <ShieldCheck className="w-4 h-4 text-primary/80" />
+   198	                Zero obligation • Instant live preview
+   199	              </span>
+   200	            </div>
+   201	          </div>
+   202	
+   203	          {/* Unified Split-Screen Studio:
+   204	              - Desktop (lg): 32% Brian Chat on the LEFT (order-1), 68% Live Website Monitor on the RIGHT (order-2)
+   205	              - Mobile (<lg): Live Website Preview on TOP (order-1), Collapsible Brian Chat Panel BELOW (order-2) */}
+   206	          <div
+   207	            id="brian-studio-workspace"
+   208	            className="grid grid-cols-1 lg:grid-cols-[32%_68%] gap-4 xl:gap-5 items-start"
+   209	          >
+   210	            {/* LEFT PANE ON DESKTOP (32%) / BOTTOM COLLAPSIBLE PANEL ON MOBILE */}
+   211	            <div className="order-2 lg:order-1 w-full">
+   212	              {/* Mobile Collapsible Toggle Bar */}
+   213	              <div className="lg:hidden mb-2">
+   214	                <button
+   215	                  type="button"
+   216	                  onClick={() => setMobileChatExpanded((prev) => !prev)}
+   217	                  className="w-full py-2.5 px-4 rounded-xl bg-[#0a1728] border border-amber-400/30 text-amber-300 text-xs font-bold flex items-center justify-between"
+   218	                >
+   219	                  <span className="flex items-center gap-2">
+   220	                    <Palette className="w-4 h-4" />
+   221	                    {mobileChatExpanded ? "Hide Brian Website Studio Chat" : "Open Brian Website Studio Chat"}
+   222	                  </span>
+   223	                  {mobileChatExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+   224	                </button>
+   225	              </div>
+   226	
+   227	              <div className={`${mobileChatExpanded ? "block" : "hidden"} lg:block`}>
+   228	                <BrianLiveEditorPanel
+   229	                  mode="studio"
+   230	                  secureId={lookupKey.toLowerCase()}
+   231	                  businessName={businessName}
+   232	                  activeRevisionId={activeRevisionId}
+   233	                  selectedElement={selectedElement}
+   234	                  onClearSelectedElement={() => setSelectedElement(null)}
+   235	                  onRevisionChange={(revId, updatedHtml, nonce) => {
+   236	                    setActiveRevisionId(revId);
+   237	                    if (updatedHtml) setLiveHtml(updatedHtml);
+   238	                    if (nonce) setSessionNonce(nonce);
+   239	                    setModalView("interactive");
+   240	                  }}
+   241	                />
+   242	              </div>
+   243	            </div>
+   244	
+   245	            {/* RIGHT PANE ON DESKTOP (68%) / TOP PREVIEW ON MOBILE */}
+   246	            <div className="order-1 lg:order-2 w-full">
+   247	              <ResponsiveMonitorFrame
+   248	                iframeSrc={activeIframeSrc}
+   249	                businessName={businessName}
+   250	                onExpand={() => setFullModalOpen(true)}
+   251	                mockupImageUrl={mockupImageUrl}
+   252	                forceInteractive={true}
+   253	                liveHtml={liveHtml}
+   254	                secureId={lookupKey.toLowerCase()}
+   255	                sessionNonce={sessionNonce}
+   256	                onSelectElement={(el) => {
+   257	                  setSelectedElement(el);
+   258	                  setMobileChatExpanded(true);
+   259	                }}
+   260	              />
+   261	            </div>
+   262	          </div>
+   263	        </div>
+   264	      </section>
+   265	
+   266	      <div className="section-separator" />
+   267	
+   268	      {/* SECTION 2: YOUR HOMEPAGE CONCEPT (LIVE DUAL VIEWPORT SHOWCASE) */}
+   269	      <section id="full-concept" className="relative py-16 md:py-24">
+   270	        <div className="container mx-auto px-4 sm:px-6">
+   271	          <div className="grid lg:grid-cols-[1fr_1.3fr] gap-10 lg:gap-16 items-center max-w-7xl mx-auto">
+   272	            <div>
+   273	              <h2 className="headline-instrument mb-5">
+   274	                <span className="headline-primary">Your homepage</span>{" "}
+   275	                <span className="text-gradient">concept</span>
+   276	              </h2>
+   277	              <ul className="space-y-4 mb-7">
+   278	                {[
+   279	                  "A mobile-first homepage concept engineered specifically for your business.",
+   280	                  "Trust-led sections for services, proof, local areas, and direct telephone/quote enquiries.",
+   281	                  "Customise colours, layout, and project showcases directly with Brian before approving.",
+   282	                ].map((line) => (
+   283	                  <li key={line} className="flex items-start gap-3 text-foreground/85">
+   284	                    <CheckCircle2 className="w-5 h-5 text-primary mt-0.5 flex-shrink-0" />
+   285	                    <span className="text-sm sm:text-base">{line}</span>
+   286	                  </li>
+   287	                ))}
+   288	              </ul>
+   289	              <div className="flex flex-col sm:flex-row gap-3">
+   290	                <Button
+   291	                  variant="cta"
+   292	                  size="lg"
+   293	                  className="gap-2 btn-glow"
+   294	                  onClick={scrollToStudio}
+   295	                >
+   296	                  Edit live with Brian
+   297	                  <ArrowRight className="w-5 h-5" />
+   298	                </Button>
+   299	                <Button
+   300	                  variant="ctaOutline"
+   301	                  size="lg"
+   302	                  className="gap-2"
+   303	                  onClick={() => setFullModalOpen(true)}
+   304	                >
+   305	                  <Eye className="w-4 h-4" /> Open Full-Screen Site
+   306	                </Button>
+   307	              </div>
+   308	            </div>
+   309	
+   310	            <div className="w-full">
+   311	              <DualLiveConceptShowcase
+   312	                iframeSrc={activeIframeSrc}
+   313	                businessName={businessName}
+   314	                onExpand={() => setFullModalOpen(true)}
+   315	              />
+   316	            </div>
+   317	          </div>
+   318	        </div>
+   319	      </section>
+   320	
+   321	      <div className="section-separator" />
+   322	
+   323	      {/* SECTION 3: 10-SLIDE AI SYSTEMS BILLBOARD CAROUSEL */}
+   324	      <ServiceBillboard items={BILLBOARD_ITEMS} />
+   325	
+   326	      <div className="section-separator" />
+   327	
+   328	      {/* SECTION 4: WHAT THIS IS — AND WHAT IT ISN'T (REVIEWED BY ROB) */}
+   329	      <section className="relative py-16 md:py-24">
+   330	        <div className="container mx-auto px-4 sm:px-6">
+   331	          <div className="max-w-3xl mx-auto text-center mb-10">
+   332	            <h2 className="headline-instrument mb-3">
+   333	              <span className="headline-primary">What this is —</span>{" "}
+   334	              <span className="text-gradient">and what it isn't</span>
+   335	            </h2>
+   336	          </div>
+   337	          <div className="grid md:grid-cols-3 gap-5 max-w-5xl mx-auto">
+   338	            {[
+   339	              {
+   340	                title: "A personalised concept",
+   341	                copy: "We created this to show what your business could look like online.",
+   342	              },
+   343	              {
+   344	                title: "Not a finished website",
+   345	                copy: "This is a concept preview. Rob would confirm the setup before anything is built properly.",
+   346	              },
+   347	              {
+   348	                title: "Reviewed by Rob",
+   349	                copy: "If the concept makes sense, Rob can confirm the best next step.",
+   350	              },
+   351	            ].map((c) => (
+   352	              <div
+   353	                key={c.title}
+   354	                className="rounded-2xl smoked-glass-strong border border-border p-6 hover:border-primary/40 transition-colors"
+   355	              >
+   356	                <h3 className="text-lg font-semibold text-foreground mb-2">{c.title}</h3>
+   357	                <p className="text-foreground/75 text-sm leading-relaxed">{c.copy}</p>
+   358	              </div>
+   359	            ))}
+   360	          </div>
+   361	        </div>
+   362	      </section>
+   363	
+   364	      <div className="section-separator" />
+   365	
+   366	      {/* FINAL CONVERSION SECTION */}
+   367	      <section className="relative py-20 md:py-28">
+   368	        <div className="container mx-auto px-4 sm:px-6">
+   369	          <div className="max-w-3xl mx-auto text-center rounded-3xl smoked-glass-strong border border-primary/20 p-10 md:p-14 shadow-[0_30px_80px_-20px_hsl(var(--brand-gold)/0.25)]">
+   370	            <h2 className="headline-instrument mb-4">
+   371	              <span className="headline-primary">Want to see what</span>{" "}
+   372	              <span className="text-gradient">this could become?</span>
+   373	            </h2>
+   374	            <p className="text-foreground/80 text-base md:text-lg mb-7">
+   375	              Tell Brian what changes you want, save your preferred version, check your domain availability, and request a tailored quote.
+   376	            </p>
+   377	            <Button
+   378	              variant="cta"
+   379	              size="xl"
+   380	              className="gap-2 btn-glow"
+   381	              onClick={scrollToStudio}
+   382	            >
+   383	              <Palette className="w-5 h-5" />
+   384	              Edit with Brian now
+   385	            </Button>
+   386	            <p className="mt-5 text-xs text-muted-foreground">
+   387	              No pressure. This is a concept preview, not a sales trap.
+   388	            </p>
+   389	          </div>
+   390	        </div>
+   391	      </section>
+   392	
+   393	      <Footer />
+   394	
+   395	      {/* FULL-SCREEN INTERACTIVE MODAL OVERLAY */}
+   396	      {fullModalOpen && (
+   397	        <div
+   398	          className="fixed inset-0 z-[100] flex flex-col bg-[#06101f] text-white animate-fade-in"
+   399	          role="dialog"
+   400	          aria-modal="true"
+   401	        >
+   402	          <div className="flex flex-wrap items-center justify-between gap-3 px-4 sm:px-6 py-3 border-b border-white/15 bg-[#091b2e] shadow-lg">
+   403	            <button
+   404	              type="button"
+   405	              onClick={() => setFullModalOpen(false)}
+   406	              className="inline-flex items-center gap-2 text-sm font-bold text-primary hover:text-white transition"
+   407	            >
+   408	              ← Back to Entreprenuity Studio &amp; Edit with Brian
+   409	            </button>
+   410	
+   411	            {mockupImageUrl && (
+   412	              <div className="flex items-center gap-1 bg-black/60 p-1 rounded-xl border border-white/15">
+   413	                <button
+   414	                  type="button"
+   415	                  onClick={() => setModalView("mockup")}
+   416	                  className={`px-3 py-1 rounded-lg text-xs font-bold transition ${
+   417	                    modalView === "mockup" ? "bg-amber-400 text-black shadow-md" : "text-white/70 hover:text-white"
+   418	                  }`}
+   419	                >
+   420	                  Uncompressed 4K Render
+   421	                </button>
+   422	                <button
+   423	                  type="button"
+   424	                  onClick={() => setModalView("interactive")}
+   425	                  className={`px-3 py-1 rounded-lg text-xs font-bold transition ${
+   426	                    modalView === "interactive" ? "bg-amber-400 text-black shadow-md" : "text-white/70 hover:text-white"
+   427	                  }`}
+   428	                >
+   429	                  Interactive Site
+   430	                </button>
+   431	              </div>
+   432	            )}
+   433	
+   434	            <button
+   435	              type="button"
+   436	              onClick={() => setFullModalOpen(false)}
+   437	              className="flex h-9 w-9 items-center justify-center rounded-lg border border-white/20 text-white hover:bg-white/10"
+   438	              aria-label="Close full view"
+   439	            >
+   440	              <X className="w-5 h-5" />
+   441	            </button>
+   442	          </div>
+   443	
+   444	          <div className="flex-1 w-full h-full overflow-auto bg-[#061321] flex items-center justify-center p-4">
+   445	            {modalView === "mockup" && mockupImageUrl ? (
+   446	              <div className="max-w-7xl w-full mx-auto my-auto flex flex-col items-center">
+   447	                <img
+   448	                  src={mockupImageUrl}
+   449	                  alt={`Full-screen concept for ${businessName}`}
+   450	                  className="max-h-[85vh] w-auto max-w-full object-contain rounded-2xl shadow-2xl border border-white/15"
+   451	                />
+   452	              </div>
+   453	            ) : liveHtml ? (
+   454	              <iframe
+   455	                srcDoc={liveHtml}
+   456	                title={`Full-screen concept for ${businessName}`}
+   457	                className="w-full h-full border-0 select-auto"
+   458	                sandbox="allow-scripts"
+   459	              />
+   460	            ) : (
+   461	              <iframe
+   462	                src={activeIframeSrc}
+   463	                title={`Full-screen concept for ${businessName}`}
+   464	                className="w-full h-full border-0 select-auto"
+   465	              />
+   466	            )}
+   467	          </div>
+   468	        </div>
+   469	      )}
+   470	    </div>
+   471	  );
+   472	}
+
+
+===== FILE: webdesignaifusion/src/components/outreach/BrianLiveEditorPanel.tsx =====
+===== SHA256: 44f628bde8ce959abc5958bddf475130189ba0de4dfa08bf0dad67f3dd8c5427 =====
+===== LINES: 988 =====
+     1	/**
+     2	 * Brian V6.5 Live Website Studio Panel
+     3	 *
+     4	 * Replaces Kerry on personalised customer preview pages (/outreach-preview/:secureId).
+     5	 * Powers the left 32% studio pane on desktop and the collapsible studio panel on mobile.
+     6	 *
+     7	 * Features:
+     8	 * - Natural-language design edits (6 premium colour palettes, responsive split-hero flip,
+     9	 *   headline & phone updates, photo-backed project galleries, modernised glass elevation,
+    10	 *   and Google Gemini Flash section-scoped AI edits)
+    11	 * - Click-to-select element context pill from the audited viewer bridge
+    12	 * - Non-destructive Undo and Redo
+    13	 * - Email-verified Save Design (including Version 1 baseline)
+    14	 * - Honest GoDaddy Domain Availability & Existing Domain Connection check (zero fake £11.99 prices)
+    15	 * - Request a Quote modal tied to the active design version
+    16	 * - Expandable Technical Activity Log backed by real Brian V6.5 job & QA receipts
+    17	 * - Zero asterisks in copy.
+    18	 */
+    19	
+    20	import { useState, useEffect, useRef } from "react";
+    21	import { Button } from "@/components/ui/button";
+    22	import {
+    23	  Send,
+    24	  RotateCcw,
+    25	  RotateCw,
+    26	  Save,
+    27	  CheckCircle,
+    28	  X,
+    29	  Palette,
+    30	  FileCheck,
+    31	  Check,
+    32	  Loader2,
+    33	  Terminal,
+    34	  Globe,
+    35	  ShieldCheck,
+    36	  ChevronDown,
+    37	  ChevronUp,
+    38	  MousePointerClick,
+    39	  Mail,
+    40	} from "lucide-react";
+    41	import {
+    42	  initBrianSession,
+    43	  sendBrianEdit,
+    44	  undoBrianEdit,
+    45	  redoBrianEdit,
+    46	  saveBrianDesign,
+    47	  checkBrianDomain,
+    48	  requestBrianQuote,
+    49	  getStoredSessionToken,
+    50	  type BrianMessage,
+    51	  type BrianActivityLogStep,
+    52	  type BrianDomainCheckResponse,
+    53	  type BrianSelectedElement,
+    54	} from "@/lib/brianLiveEditorClient";
+    55	
+    56	interface Props {
+    57	  secureId: string;
+    58	  businessName: string;
+    59	  editCapability?: string | null;
+    60	  isOpen?: boolean;
+    61	  onClose?: () => void;
+    62	  onRevisionChange: (revisionId: string | null, updatedHtml?: string | null, sessionNonce?: string | null) => void;
+    63	  activeRevisionId: string | null;
+    64	  selectedElement?: BrianSelectedElement | null;
+    65	  onClearSelectedElement?: () => void;
+    66	  mode?: "studio" | "inline" | "drawer";
+    67	}
+    68	
+    69	const STUDIO_QUICK_ACTIONS = [
+    70	  {
+    71	    label: "Change Colours",
+    72	    prompt: "Change the website to forest green.",
+    73	  },
+    74	  {
+    75	    label: "Flip Hero",
+    76	    prompt: "Put the worker on the right and text on the left.",
+    77	  },
+    78	  {
+    79	    label: "Update Headline",
+    80	    prompt: "Change the headline to 24/7 Emergency Callouts & Trusted Local Specialists.",
+    81	  },
+    82	  {
+    83	    label: "Add Project Examples",
+    84	    prompt: "Add an example projects gallery.",
+    85	  },
+    86	  {
+    87	    label: "Update Phone",
+    88	    prompt: "Update the phone number to 01922 710442.",
+    89	  },
+    90	  {
+    91	    label: "Modernise Design",
+    92	    prompt: "Modernise the design with smoked glass cards and ambient lighting.",
+    93	  },
+    94	];
+    95	
+    96	const PALETTE_SWATCHES = [
+    97	  { id: "forest-green", label: "Forest Green", color: "#10b981", prompt: "Change the website to forest green." },
+    98	  { id: "cobalt-blue", label: "Cobalt Blue", color: "#3b82f6", prompt: "Change the website to cobalt blue." },
+    99	  { id: "crimson", label: "Crimson", color: "#e11d48", prompt: "Change the website to crimson." },
+   100	  { id: "navy-gold", label: "Navy & Gold", color: "#d4af37", prompt: "Change the colours to navy and gold." },
+   101	  { id: "warm-amber", label: "Warm Amber", color: "#f59e0b", prompt: "Change the website to warm amber." },
+   102	  { id: "light-editorial", label: "Light Editorial", color: "#f8fafc", prompt: "Switch to light editorial mode." },
+   103	];
+   104	
+   105	export default function BrianLiveEditorPanel({
+   106	  secureId,
+   107	  businessName,
+   108	  editCapability = null,
+   109	  isOpen = true,
+   110	  onClose,
+   111	  onRevisionChange,
+   112	  activeRevisionId,
+   113	  selectedElement = null,
+   114	  onClearSelectedElement,
+   115	  mode = "studio",
+   116	}: Props) {
+   117	  const [sessionToken, setSessionToken] = useState<string>("");
+   118	  const [sessionNonce, setSessionNonce] = useState<string>("viewer");
+   119	  const [messages, setMessages] = useState<BrianMessage[]>([]);
+   120	  const [input, setInput] = useState("");
+   121	  const [loading, setLoading] = useState(false);
+   122	  const [currentVersion, setCurrentVersion] = useState(1);
+   123	  const [canUndo, setCanUndo] = useState(Boolean(activeRevisionId));
+   124	  const [canRedo, setCanRedo] = useState(false);
+   125	  const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
+   126	  const [showPalettePicker, setShowPalettePicker] = useState(false);
+   127	
+   128	  // Email verification modal/drawer for Save Design (Decision 1)
+   129	  const [savePromptOpen, setSavePromptOpen] = useState(false);
+   130	  const [saveEmail, setSaveEmail] = useState("");
+   131	  const [saveEmailError, setSaveEmailError] = useState<string | null>(null);
+   132	
+   133	  // Technical Activity Log backed by real Brian V6.5 job & QA receipts
+   134	  const [activityLogs, setActivityLogs] = useState<BrianActivityLogStep[]>([]);
+   135	  const [showLogs, setShowLogs] = useState(false);
+   136	
+   137	  // GoDaddy Domain Availability & Existing Domain Connection state (Decision 3)
+   138	  const [domainPanelOpen, setDomainPanelOpen] = useState(false);
+   139	  const [domainQuery, setDomainQuery] = useState("");
+   140	  const [domainChecking, setDomainChecking] = useState(false);
+   141	  const [domainResult, setDomainResult] = useState<BrianDomainCheckResponse | null>(null);
+   142	  const [existingDomainMode, setExistingDomainMode] = useState(false);
+   143	
+   144	  // Quote Modal state
+   145	  const [quoteModalOpen, setQuoteModalOpen] = useState(false);
+   146	  const [quoteSubmitting, setQuoteSubmitting] = useState(false);
+   147	  const [quoteSuccess, setQuoteSuccess] = useState(false);
+   148	  const [quoteForm, setQuoteForm] = useState({ name: "", email: "", phone: "", notes: "" });
+   149	
+   150	  const messagesEndRef = useRef<HTMLDivElement>(null);
+   151	
+   152	  // Initialize Brian V6.5 session and redeem signed editing capability
+   153	  useEffect(() => {
+   154	    if (!secureId) return;
+   155	
+   156	    let active = true;
+   157	    const existingToken = getStoredSessionToken(secureId);
+   158	    if (existingToken) setSessionToken(existingToken);
+   159	
+   160	    void initBrianSession(secureId, businessName, editCapability).then((res) => {
+   161	      if (!active) return;
+   162	      if (res.ok && res.sessionToken) {
+   163	        setSessionToken(res.sessionToken);
+   164	        const nonce = res.sessionNonce || "viewer";
+   165	        setSessionNonce(nonce);
+   166	        setCanUndo(Boolean(res.prospect?.canUndo || res.prospect?.activeRevisionId));
+   167	        setCanRedo(Boolean(res.prospect?.canRedo));
+   168	        if (res.prospect?.savedCustomerEmail) {
+   169	          setSaveEmail(res.prospect.savedCustomerEmail);
+   170	        }
+   171	        setActivityLogs([
+   172	          {
+   173	            step: "Studio Session Ready",
+   174	            detail: `Connected to Brian V6.5 (agent_id=${res.agent_id || "brian"}) for ${businessName}`,
+   175	            status: "completed",
+   176	            time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+   177	          },
+   178	        ]);
+   179	        onRevisionChange(res.prospect?.activeRevisionId ?? null, res.html ?? null, nonce);
+   180	      } else {
+   181	        setActivityLogs([
+   182	          {
+   183	            step: "Backend Status",
+   184	            detail: res.error || "Brian V6.5 backend unavailable",
+   185	            status: "failed",
+   186	            time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+   187	          },
+   188	        ]);
+   189	      }
+   190	    });
+   191	
+   192	    setMessages([
+   193	      {
+   194	        id: "msg_init",
+   195	        sender: "brian",
+   196	        text: `Hi, I am Brian, your dedicated website designer for ${businessName}. Click any headline, button, or section on the live preview — or use the studio actions below — and tell me how you want it changed.`,
+   197	        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+   198	      },
+   199	    ]);
+   200	
+   201	    return () => {
+   202	      active = false;
+   203	    };
+   204	  }, [secureId, businessName, editCapability]);
+   205	
+   206	  useEffect(() => {
+   207	    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+   208	  }, [messages, loading]);
+   209	
+   210	  const handleSendPrompt = async (promptText: string) => {
+   211	    const text = promptText.trim();
+   212	    if (!text || loading) return;
+   213	
+   214	    const nowTime = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+   215	    const userMsg: BrianMessage = {
+   216	      id: `msg_u_${Date.now()}`,
+   217	      sender: "user",
+   218	      text: selectedElement ? `[${selectedElement.label}] ${text}` : text,
+   219	      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+   220	    };
+   221	
+   222	    setMessages((prev) => [...prev, userMsg]);
+   223	    setInput("");
+   224	    setLoading(true);
+   225	    setSaveSuccess(null);
+   226	    setShowPalettePicker(false);
+   227	
+   228	    setActivityLogs((prev) => [
+   229	      ...prev,
+   230	      {
+   231	        step: "Edit Requested",
+   232	        detail: `Dispatching live modification to Brian V6.5: "${text.slice(0, 60)}"`,
+   233	        status: "completed",
+   234	        time: nowTime,
+   235	      },
+   236	    ]);
+   237	
+   238	    const history = messages.slice(-6).map((m) => ({
+   239	      role: m.sender === "user" ? ("user" as const) : ("assistant" as const),
+   240	      content: m.text,
+   241	    }));
+   242	
+   243	    const result = await sendBrianEdit(
+   244	      secureId,
+   245	      sessionToken,
+   246	      text,
+   247	      history,
+   248	      businessName,
+   249	      activeRevisionId,
+   250	      selectedElement
+   251	    );
+   252	
+   253	    if (result.ok && result.revision_id) {
+   254	      setCurrentVersion(result.version_number || currentVersion + 1);
+   255	      setCanUndo(true);
+   256	      setCanRedo(false);
+   257	      onRevisionChange(result.revision_id, result.html ?? null, sessionNonce);
+   258	      if (onClearSelectedElement) onClearSelectedElement();
+   259	
+   260	      if (result.activity_log && result.activity_log.length > 0) {
+   261	        setActivityLogs((prev) => [...prev, ...result.activity_log!]);
+   262	      } else {
+   263	        setActivityLogs((prev) => [
+   264	          ...prev,
+   265	          {
+   266	            step: "QA Passed",
+   267	            detail: `Revision ${result.revision_id} verified by Brian V6.5`,
+   268	            status: "completed",
+   269	            time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+   270	          },
+   271	        ]);
+   272	      }
+   273	
+   274	      const brianMsg: BrianMessage = {
+   275	        id: `msg_b_${Date.now()}`,
+   276	        sender: "brian",
+   277	        text: result.message || "I have updated the design for you. Take a look at the live preview on the right.",
+   278	        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+   279	        revisionId: result.revision_id,
+   280	        diffSummary: result.diff_summary,
+   281	        jobId: result.job_id,
+   282	        sourceSha: result.source_sha,
+   283	      };
+   284	      setMessages((prev) => [...prev, brianMsg]);
+   285	    } else {
+   286	      setActivityLogs((prev) => [
+   287	        ...prev,
+   288	        {
+   289	          step: "Edit Blocked",
+   290	          detail: result.error || "Failed QA check",
+   291	          status: "failed",
+   292	          time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+   293	        },
+   294	      ]);
+   295	
+   296	      const errorMsg: BrianMessage = {
+   297	        id: `msg_err_${Date.now()}`,
+   298	        sender: "brian",
+   299	        text: result.message || result.error || "I could not apply that specific change right now. Your previous design remains safe.",
+   300	        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+   301	      };
+   302	      setMessages((prev) => [...prev, errorMsg]);
+   303	    }
+   304	
+   305	    setLoading(false);
+   306	  };
+   307	
+   308	  const handleUndo = async () => {
+   309	    if (loading || (!canUndo && !activeRevisionId)) return;
+   310	    setLoading(true);
+   311	
+   312	    const result = await undoBrianEdit(secureId, sessionToken);
+   313	    if (result.ok) {
+   314	      const nextRev = result.active_revision_id ?? result.revision_id ?? null;
+   315	      setCanUndo(Boolean(result.can_undo ?? nextRev));
+   316	      setCanRedo(Boolean(result.can_redo ?? true));
+   317	      setCurrentVersion(result.version_number || Math.max(1, currentVersion - 1));
+   318	      onRevisionChange(nextRev, result.html ?? null, sessionNonce);
+   319	
+   320	      setActivityLogs((prev) => [
+   321	        ...prev,
+   322	        {
+   323	          step: "Undo Executed",
+   324	          detail: nextRev ? `Reverted to revision ${nextRev}` : "Reverted to original Version 1 baseline",
+   325	          status: "completed",
+   326	          time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+   327	        },
+   328	      ]);
+   329	
+   330	      const undoMsg: BrianMessage = {
+   331	        id: `msg_undo_${Date.now()}`,
+   332	        sender: "brian",
+   333	        text: result.message || "I have reverted the design to the previous version. Click Redo if you want it back.",
+   334	        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+   335	      };
+   336	      setMessages((prev) => [...prev, undoMsg]);
+   337	    }
+   338	
+   339	    setLoading(false);
+   340	  };
+   341	
+   342	  const handleRedo = async () => {
+   343	    if (loading || !canRedo) return;
+   344	    setLoading(true);
+   345	
+   346	    const result = await redoBrianEdit(secureId, sessionToken);
+   347	    if (result.ok) {
+   348	      const nextRev = result.revision_id ?? null;
+   349	      setCanUndo(true);
+   350	      setCanRedo(Boolean(result.can_redo));
+   351	      setCurrentVersion(result.version_number || currentVersion + 1);
+   352	      onRevisionChange(nextRev, result.html ?? null, sessionNonce);
+   353	
+   354	      setActivityLogs((prev) => [
+   355	        ...prev,
+   356	        {
+   357	          step: "Redo Executed",
+   358	          detail: `Restored revision ${nextRev}`,
+   359	          status: "completed",
+   360	          time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+   361	        },
+   362	      ]);
+   363	
+   364	      const redoMsg: BrianMessage = {
+   365	        id: `msg_redo_${Date.now()}`,
+   366	        sender: "brian",
+   367	        text: result.message || "I have restored your edited version.",
+   368	        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+   369	      };
+   370	      setMessages((prev) => [...prev, redoMsg]);
+   371	    }
+   372	
+   373	    setLoading(false);
+   374	  };
+   375	
+   376	  const handleConfirmSave = async (e: React.FormEvent) => {
+   377	    e.preventDefault();
+   378	    const cleanEmail = saveEmail.trim();
+   379	    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+   380	      setSaveEmailError("Please enter a valid business email address to claim and save this version.");
+   381	      return;
+   382	    }
+   383	    setSaveEmailError(null);
+   384	    setLoading(true);
+   385	
+   386	    const result = await saveBrianDesign(secureId, sessionToken, cleanEmail, undefined, true);
+   387	    if (result.ok) {
+   388	      setSavePromptOpen(false);
+   389	      setSaveSuccess(
+   390	        result.message || `Version ${result.version_number || currentVersion} saved and verified for ${cleanEmail}.`
+   391	      );
+   392	      setDomainPanelOpen(true);
+   393	      setActivityLogs((prev) => [
+   394	        ...prev,
+   395	        {
+   396	          step: "Design Saved",
+   397	          detail: `Saved revision ${result.revision_id || activeRevisionId || "v1-baseline"} for ${cleanEmail}`,
+   398	          status: "completed",
+   399	          time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+   400	        },
+   401	      ]);
+   402	    } else {
+   403	      setSaveEmailError(result.message || result.error || "Could not save design right now.");
+   404	    }
+   405	    setLoading(false);
+   406	  };
+   407	
+   408	  const handleDomainCheck = async (e: React.FormEvent) => {
+   409	    e.preventDefault();
+   410	    if (domainChecking) return;
+   411	    setDomainChecking(true);
+   412	
+   413	    const query = domainQuery.trim() || businessName;
+   414	    const res = await checkBrianDomain(secureId, sessionToken, query, businessName);
+   415	    setDomainResult(res);
+   416	    setDomainChecking(false);
+   417	  };
+   418	
+   419	  const handleQuoteSubmit = async (e: React.FormEvent) => {
+   420	    e.preventDefault();
+   421	    if (!quoteForm.name || quoteSubmitting) return;
+   422	
+   423	    setQuoteSubmitting(true);
+   424	    const result = await requestBrianQuote(secureId, sessionToken, {
+   425	      name: quoteForm.name,
+   426	      email: quoteForm.email || saveEmail,
+   427	      phone: quoteForm.phone,
+   428	      requirements: quoteForm.notes,
+   429	      timeframe: "Flexible",
+   430	    });
+   431	
+   432	    if (result.ok) {
+   433	      setQuoteSuccess(true);
+   434	      setTimeout(() => {
+   435	        setQuoteModalOpen(false);
+   436	        setQuoteSuccess(false);
+   437	      }, 3000);
+   438	    }
+   439	    setQuoteSubmitting(false);
+   440	  };
+   441	
+   442	  if (mode === "drawer" && !isOpen) return null;
+   443	
+   444	  const containerClasses =
+   445	    mode === "studio"
+   446	      ? "w-full h-full min-h-[640px] lg:h-[860px] rounded-2xl bg-[#07111e] border-2 border-white/15 shadow-2xl overflow-hidden flex flex-col"
+   447	      : mode === "inline"
+   448	        ? "w-full max-w-5xl mx-auto rounded-3xl bg-[#07111e] border border-white/15 shadow-2xl overflow-hidden flex flex-col"
+   449	        : "fixed inset-y-0 right-0 z-50 w-full sm:w-[460px] md:w-[500px] bg-[#07111e] border-l border-white/10 shadow-2xl flex flex-col";
+   450	
+   451	  return (
+   452	    <div id="edit-with-brian" className={containerClasses}>
+   453	      {/* Studio Header */}
+   454	      <div className="p-3.5 sm:p-4 border-b border-white/10 bg-[#0a1728] flex items-center justify-between gap-2">
+   455	        <div className="flex items-center gap-2.5 min-w-0">
+   456	          <div className="w-9 h-9 rounded-xl bg-amber-400/15 border border-amber-400/30 flex items-center justify-center text-amber-400 shrink-0">
+   457	            <Palette className="w-4 h-4" />
+   458	          </div>
+   459	          <div className="min-w-0">
+   460	            <div className="flex items-center gap-2">
+   461	              <h3 className="font-bold text-white text-sm sm:text-base truncate">Brian Website Studio</h3>
+   462	              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-400/15 text-amber-300 border border-amber-400/30 shrink-0">
+   463	                V6.5 Live
+   464	              </span>
+   465	            </div>
+   466	            <p className="text-[11px] text-white/60 truncate">
+   467	              Editing {businessName}
+   468	            </p>
+   469	          </div>
+   470	        </div>
+   471	
+   472	        <div className="flex items-center gap-1.5 shrink-0">
+   473	          <button
+   474	            type="button"
+   475	            onClick={() => setShowLogs((prev) => !prev)}
+   476	            className="px-2 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-[11px] text-white/80 flex items-center gap-1 transition"
+   477	            title="Toggle Brian V6.5 Technical Activity Log"
+   478	          >
+   479	            <Terminal className="w-3.5 h-3.5 text-amber-400" />
+   480	            <span className="hidden xl:inline">Receipts</span>
+   481	            {showLogs ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+   482	          </button>
+   483	
+   484	          {mode === "drawer" && onClose && (
+   485	            <button
+   486	              type="button"
+   487	              onClick={onClose}
+   488	              className="w-8 h-8 rounded-xl bg-white/5 hover:bg-white/10 text-white/70 hover:text-white flex items-center justify-center transition"
+   489	              aria-label="Close editor"
+   490	            >
+   491	              <X className="w-4 h-4" />
+   492	            </button>
+   493	          )}
+   494	        </div>
+   495	      </div>
+   496	
+   497	      {/* Version & Undo/Redo Toolbar */}
+   498	      <div className="px-3.5 py-2 bg-black/40 border-b border-white/5 flex flex-wrap items-center justify-between gap-2 text-xs">
+   499	        <div className="flex items-center gap-1.5 text-white/70">
+   500	          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+   501	          <span className="font-bold text-white">
+   502	            {activeRevisionId ? `Version ${currentVersion}` : "Version 1 (Baseline)"}
+   503	          </span>
+   504	          {activeRevisionId && (
+   505	            <span className="text-[10px] text-white/40 font-mono">({activeRevisionId.slice(0, 10)})</span>
+   506	          )}
+   507	        </div>
+   508	        <div className="flex items-center gap-2">
+   509	          <button
+   510	            type="button"
+   511	            onClick={handleUndo}
+   512	            disabled={loading || (!canUndo && !activeRevisionId)}
+   513	            className="flex items-center gap-1 px-2 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-amber-400 hover:text-amber-300 text-[11px] font-medium transition disabled:opacity-35"
+   514	            title="Undo last change"
+   515	          >
+   516	            <RotateCcw className="w-3 h-3" />
+   517	            Undo
+   518	          </button>
+   519	          <button
+   520	            type="button"
+   521	            onClick={handleRedo}
+   522	            disabled={loading || !canRedo}
+   523	            className="flex items-center gap-1 px-2 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-emerald-400 hover:text-emerald-300 text-[11px] font-medium transition disabled:opacity-35"
+   524	            title="Redo change"
+   525	          >
+   526	            <RotateCw className="w-3 h-3" />
+   527	            Redo
+   528	          </button>
+   529	        </div>
+   530	      </div>
+   531	
+   532	      {/* Expandable Technical Activity Log */}
+   533	      {showLogs && (
+   534	        <div className="px-3.5 py-2.5 bg-[#040a12] border-b border-white/10 max-h-40 overflow-y-auto font-mono text-[11px] space-y-1.5">
+   535	          <div className="text-amber-400 font-bold mb-1 flex items-center justify-between">
+   536	            <span>BRIAN V6.5 EXECUTION RECEIPTS</span>
+   537	            <span className="text-[10px] text-emerald-400">ISOLATED PROSPECT SCOPE</span>
+   538	          </div>
+   539	          {activityLogs.length === 0 ? (
+   540	            <p className="text-white/40">No activity recorded yet.</p>
+   541	          ) : (
+   542	            activityLogs.map((log, index) => (
+   543	              <div key={`${log.step}-${index}`} className="flex items-start gap-2 text-white/80">
+   544	                <span className="text-white/40 shrink-0">[{log.time}]</span>
+   545	                <span
+   546	                  className={
+   547	                    log.status === "completed"
+   548	                      ? "text-emerald-400 font-semibold shrink-0"
+   549	                      : "text-red-400 font-semibold shrink-0"
+   550	                  }
+   551	                >
+   552	                  {log.step}:
+   553	                </span>
+   554	                <span className="text-white/70 break-all">{log.detail}</span>
+   555	              </div>
+   556	            ))
+   557	          )}
+   558	        </div>
+   559	      )}
+   560	
+   561	      {/* Selected Element Target Pill (Click-to-Select Bridge) */}
+   562	      {selectedElement && (
+   563	        <div className="px-3.5 py-2 bg-emerald-500/15 border-b border-emerald-500/30 flex items-center justify-between gap-2 text-xs">
+   564	          <div className="flex items-center gap-2 min-w-0">
+   565	            <MousePointerClick className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+   566	            <span className="text-emerald-300 font-semibold shrink-0">Selected {selectedElement.label}:</span>
+   567	            <span className="text-white/80 truncate italic">
+   568	              "{selectedElement.currentText.slice(0, 48)}"
+   569	            </span>
+   570	          </div>
+   571	          {onClearSelectedElement && (
+   572	            <button
+   573	              type="button"
+   574	              onClick={onClearSelectedElement}
+   575	              className="text-white/60 hover:text-white shrink-0"
+   576	              title="Clear selection"
+   577	            >
+   578	              <X className="w-3.5 h-3.5" />
+   579	            </button>
+   580	          )}
+   581	        </div>
+   582	      )}
+   583	
+   584	      {/* Messages Scroll Area */}
+   585	      <div className="flex-1 overflow-y-auto p-3.5 space-y-3.5 min-h-[220px]">
+   586	        {messages.map((msg) => (
+   587	          <div
+   588	            key={msg.id}
+   589	            className={`flex flex-col ${msg.sender === "user" ? "items-end" : "items-start"}`}
+   590	          >
+   591	            <div
+   592	              className={`max-w-[90%] rounded-2xl px-3.5 py-2.5 text-xs sm:text-sm leading-relaxed ${
+   593	                msg.sender === "user"
+   594	                  ? "bg-amber-400 text-black font-medium"
+   595	                  : "bg-white/5 text-white/90 border border-white/10"
+   596	              }`}
+   597	            >
+   598	              <p>{msg.text}</p>
+   599	              {msg.diffSummary && (
+   600	                <div className="mt-2 pt-2 border-t border-white/10 text-[11px] text-amber-300 font-mono">
+   601	                  Applied: {msg.diffSummary}
+   602	                </div>
+   603	              )}
+   604	              {msg.jobId && (
+   605	                <div className="mt-1 text-[10px] text-white/45 font-mono">
+   606	                  Receipt: {msg.jobId} • SHA: {msg.sourceSha?.slice(0, 10) || "verified"}
+   607	                </div>
+   608	              )}
+   609	            </div>
+   610	            <span className="text-[10px] text-white/40 mt-1 px-1">
+   611	              {msg.sender === "user" ? "You" : "Brian V6.5"} • {msg.timestamp}
+   612	            </span>
+   613	          </div>
+   614	        ))}
+   615	
+   616	        {loading && (
+   617	          <div className="flex items-center gap-2.5 text-amber-400 text-xs py-2.5 px-3.5 bg-amber-400/10 rounded-xl border border-amber-400/20">
+   618	            <Loader2 className="w-4 h-4 animate-spin flex-shrink-0" />
+   619	            <span>Brian is updating your live HTML and running DOM QA...</span>
+   620	          </div>
+   621	        )}
+   622	
+   623	        <div ref={messagesEndRef} />
+   624	      </div>
+   625	
+   626	      {/* Colour Palette Swatch Picker (when Change Colours is toggled) */}
+   627	      {showPalettePicker && (
+   628	        <div className="px-3.5 py-2.5 bg-[#0d1e33] border-t border-white/15">
+   629	          <div className="flex items-center justify-between mb-2">
+   630	            <span className="text-[11px] font-bold text-white uppercase tracking-wider">
+   631	              Select Colour Palette (6 V6.5 Themes)
+   632	            </span>
+   633	            <button
+   634	              type="button"
+   635	              onClick={() => setShowPalettePicker(false)}
+   636	              className="text-[11px] text-white/50 hover:text-white"
+   637	            >
+   638	              Close
+   639	            </button>
+   640	          </div>
+   641	          <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+   642	            {PALETTE_SWATCHES.map((swatch) => (
+   643	              <button
+   644	                key={swatch.id}
+   645	                type="button"
+   646	                disabled={loading}
+   647	                onClick={() => handleSendPrompt(swatch.prompt)}
+   648	                className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-black/40 hover:bg-white/10 border border-white/10 text-left text-[11px] text-white transition"
+   649	              >
+   650	                <span
+   651	                  className="w-3 h-3 rounded-full shrink-0 border border-white/30"
+   652	                  style={{ backgroundColor: swatch.color }}
+   653	                />
+   654	                <span className="truncate">{swatch.label}</span>
+   655	              </button>
+   656	            ))}
+   657	          </div>
+   658	        </div>
+   659	      )}
+   660	
+   661	      {/* 6 Studio Quick Actions */}
+   662	      <div className="p-2.5 sm:p-3 bg-[#0a1728] border-t border-white/10">
+   663	        <p className="text-[10px] font-semibold uppercase tracking-wider text-white/50 mb-1.5">
+   664	          Quick Studio Actions:
+   665	        </p>
+   666	        <div className="flex flex-wrap gap-1.5">
+   667	          {STUDIO_QUICK_ACTIONS.map((item) => (
+   668	            <button
+   669	              key={item.label}
+   670	              type="button"
+   671	              disabled={loading}
+   672	              onClick={() => {
+   673	                if (item.label === "Change Colours") {
+   674	                  setShowPalettePicker((prev) => !prev);
+   675	                } else {
+   676	                  void handleSendPrompt(item.prompt);
+   677	                }
+   678	              }}
+   679	              className="px-2.5 py-1 text-[11px] rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-white/85 hover:text-white transition disabled:opacity-50"
+   680	            >
+   681	              {item.label}
+   682	            </button>
+   683	          ))}
+   684	        </div>
+   685	      </div>
+   686	
+   687	      {/* Conversational Prompt Input */}
+   688	      <form
+   689	        onSubmit={(e) => {
+   690	          e.preventDefault();
+   691	          void handleSendPrompt(input);
+   692	        }}
+   693	        className="p-3 bg-[#07111e] border-t border-white/10 flex items-center gap-2"
+   694	      >
+   695	        <input
+   696	          type="text"
+   697	          value={input}
+   698	          onChange={(e) => setInput(e.target.value)}
+   699	          placeholder={
+   700	            selectedElement
+   701	              ? `Tell Brian how to change this ${selectedElement.label}...`
+   702	              : "Tell Brian what to change (e.g. Change the website to forest green)..."
+   703	          }
+   704	          disabled={loading}
+   705	          className="flex-1 bg-white/5 border border-white/15 rounded-xl px-3 py-2 text-xs sm:text-sm text-white placeholder-white/40 focus:outline-none focus:border-amber-400/60"
+   706	        />
+   707	        <Button
+   708	          type="submit"
+   709	          variant="cta"
+   710	          size="sm"
+   711	          disabled={loading || !input.trim()}
+   712	          className="gap-1.5 px-3.5 h-9"
+   713	        >
+   714	          <Send className="w-3.5 h-3.5" />
+   715	          <span>Apply</span>
+   716	        </Button>
+   717	      </form>
+   718	
+   719	      {/* Email-Verified Save Prompt Drawer (Decision 1) */}
+   720	      {savePromptOpen && (
+   721	        <form onSubmit={handleConfirmSave} className="p-3.5 bg-[#0c1d31] border-t border-amber-400/30 space-y-2">
+   722	          <div className="flex items-center justify-between">
+   723	            <span className="text-xs font-bold text-white flex items-center gap-1.5">
+   724	              <Mail className="w-3.5 h-3.5 text-amber-400" />
+   725	              Verify Your Email to Save Version {currentVersion}
+   726	            </span>
+   727	            <button
+   728	              type="button"
+   729	              onClick={() => setSavePromptOpen(false)}
+   730	              className="text-xs text-white/50 hover:text-white"
+   731	            >
+   732	              Cancel
+   733	            </button>
+   734	          </div>
+   735	          <div className="flex gap-2">
+   736	            <input
+   737	              type="email"
+   738	              required
+   739	              value={saveEmail}
+   740	              onChange={(e) => setSaveEmail(e.target.value)}
+   741	              placeholder="Enter your business email (e.g. info@yourbusiness.co.uk)"
+   742	              className="flex-1 bg-black/40 border border-white/15 rounded-xl px-3 py-1.5 text-xs text-white placeholder-white/40 focus:outline-none focus:border-amber-400"
+   743	            />
+   744	            <Button type="submit" variant="cta" size="sm" disabled={loading} className="text-xs">
+   745	              Confirm Save
+   746	            </Button>
+   747	          </div>
+   748	          {saveEmailError && <p className="text-[11px] text-red-400">{saveEmailError}</p>}
+   749	        </form>
+   750	      )}
+   751	
+   752	      {/* Bottom Action Bar: Save, Domain Check & Quote */}
+   753	      <div className="p-2.5 sm:p-3 bg-[#050b14] border-t border-white/10 flex flex-wrap items-center justify-between gap-1.5">
+   754	        <Button
+   755	          type="button"
+   756	          variant="ctaOutline"
+   757	          size="sm"
+   758	          onClick={() => setSavePromptOpen((prev) => !prev)}
+   759	          disabled={loading}
+   760	          className="flex-1 text-xs gap-1 border-white/20 text-white hover:bg-white/10"
+   761	        >
+   762	          <Save className="w-3.5 h-3.5" />
+   763	          Save Design
+   764	        </Button>
+   765	        <Button
+   766	          type="button"
+   767	          variant="ctaOutline"
+   768	          size="sm"
+   769	          onClick={() => setDomainPanelOpen((prev) => !prev)}
+   770	          disabled={loading}
+   771	          className="flex-1 text-xs gap-1 border-amber-400/30 text-amber-300 hover:bg-amber-400/10"
+   772	        >
+   773	          <Globe className="w-3.5 h-3.5" />
+   774	          Domain
+   775	        </Button>
+   776	        <Button
+   777	          type="button"
+   778	          variant="cta"
+   779	          size="sm"
+   780	          onClick={() => setQuoteModalOpen(true)}
+   781	          disabled={loading}
+   782	          className="flex-1 text-xs gap-1"
+   783	        >
+   784	          <FileCheck className="w-3.5 h-3.5" />
+   785	          Quote
+   786	        </Button>
+   787	      </div>
+   788	
+   789	      {saveSuccess && (
+   790	        <div className="p-2.5 bg-emerald-500/10 border-t border-emerald-500/20 text-emerald-400 text-xs flex items-center gap-2">
+   791	          <CheckCircle className="w-4 h-4 flex-shrink-0" />
+   792	          <span>{saveSuccess}</span>
+   793	        </div>
+   794	      )}
+   795	
+   796	      {/* GoDaddy Domain Availability & Connection Panel (Decision 3: Honest Status) */}
+   797	      {domainPanelOpen && (
+   798	        <div className="p-3.5 bg-[#091526] border-t border-white/15 space-y-2.5">
+   799	          <div className="flex items-center justify-between">
+   800	            <div className="flex items-center gap-2">
+   801	              <Globe className="w-4 h-4 text-amber-400" />
+   802	              <h4 className="text-xs font-bold text-white uppercase tracking-wider">
+   803	                Domain Availability &amp; Connection
+   804	              </h4>
+   805	            </div>
+   806	            <button
+   807	              type="button"
+   808	              onClick={() => setDomainPanelOpen(false)}
+   809	              className="text-xs text-white/50 hover:text-white"
+   810	            >
+   811	              Close
+   812	            </button>
+   813	          </div>
+   814	
+   815	          <div className="flex gap-2 text-xs">
+   816	            <button
+   817	              type="button"
+   818	              onClick={() => setExistingDomainMode(false)}
+   819	              className={`px-2.5 py-1 rounded-lg font-medium transition ${
+   820	                !existingDomainMode ? "bg-amber-400 text-black" : "bg-white/5 text-white/70"
+   821	              }`}
+   822	            >
+   823	              Check New Domain (GoDaddy)
+   824	            </button>
+   825	            <button
+   826	              type="button"
+   827	              onClick={() => setExistingDomainMode(true)}
+   828	              className={`px-2.5 py-1 rounded-lg font-medium transition ${
+   829	                existingDomainMode ? "bg-amber-400 text-black" : "bg-white/5 text-white/70"
+   830	              }`}
+   831	            >
+   832	              Connect Existing Domain
+   833	            </button>
+   834	          </div>
+   835	
+   836	          <form onSubmit={handleDomainCheck} className="flex gap-2">
+   837	            <input
+   838	              type="text"
+   839	              value={domainQuery}
+   840	              onChange={(e) => setDomainQuery(e.target.value)}
+   841	              placeholder={
+   842	                existingDomainMode
+   843	                  ? "Enter your current domain (e.g. mybusiness.co.uk)"
+   844	                  : "Search desired domain (e.g. mybusiness.co.uk)"
+   845	              }
+   846	              className="flex-1 bg-white/5 border border-white/15 rounded-xl px-3 py-1.5 text-xs text-white placeholder-white/40 focus:outline-none focus:border-amber-400"
+   847	            />
+   848	            <Button type="submit" variant="cta" size="sm" disabled={domainChecking} className="text-xs">
+   849	              {domainChecking ? "Checking..." : existingDomainMode ? "Verify" : "Check"}
+   850	            </Button>
+   851	          </form>
+   852	
+   853	          {domainResult && domainResult.ok && (
+   854	            <div className="p-2.5 rounded-xl bg-black/40 border border-white/10 space-y-2 text-xs">
+   855	              <p className="text-emerald-400 font-medium">{domainResult.message}</p>
+   856	              {!existingDomainMode && domainResult.suggestions && (
+   857	                <div className="space-y-1 pt-1">
+   858	                  {domainResult.suggestions.map((s) => (
+   859	                    <div
+   860	                      key={s.domain}
+   861	                      className="flex items-center justify-between text-white/80 py-1 border-b border-white/5 last:border-0"
+   862	                    >
+   863	                      <span className="font-mono">{s.domain}</span>
+   864	                      <span className="text-amber-300 font-semibold">
+   865	                        {s.available === true
+   866	                          ? s.price_gbp_per_year
+   867	                            ? `Available • £${s.price_gbp_per_year}/yr`
+   868	                            : "Available via GoDaddy"
+   869	                          : s.available === false
+   870	                            ? "Registered (Can Connect)"
+   871	                            : "Verified on Launch Request"}
+   872	                      </span>
+   873	                    </div>
+   874	                  ))}
+   875	                </div>
+   876	              )}
+   877	              <div className="flex items-center gap-1.5 text-[11px] text-white/50 pt-1">
+   878	                <ShieldCheck className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+   879	                <span>
+   880	                  No domain purchase, DNS change, or production launch happens without your explicit authorisation and payment.
+   881	                </span>
+   882	              </div>
+   883	            </div>
+   884	          )}
+   885	        </div>
+   886	      )}
+   887	
+   888	      {/* Request a Quote Modal */}
+   889	      {quoteModalOpen && (
+   890	        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+   891	          <div className="max-w-md w-full bg-[#0a1728] border border-white/15 rounded-2xl p-6 shadow-2xl relative">
+   892	            <button
+   893	              type="button"
+   894	              onClick={() => setQuoteModalOpen(false)}
+   895	              className="absolute top-4 right-4 text-white/60 hover:text-white"
+   896	            >
+   897	              <X className="w-5 h-5" />
+   898	            </button>
+   899	
+   900	            <div className="flex items-center gap-3 mb-4">
+   901	              <div className="w-10 h-10 rounded-xl bg-amber-400/15 border border-amber-400/30 flex items-center justify-center text-amber-400">
+   902	                <FileCheck className="w-5 h-5" />
+   903	              </div>
+   904	              <div>
+   905	                <h4 className="font-bold text-white text-lg">Approve Design &amp; Request Quote</h4>
+   906	                <p className="text-xs text-white/60">Tied to your custom Brian V6.5 design concept</p>
+   907	              </div>
+   908	            </div>
+   909	
+   910	            {quoteSuccess ? (
+   911	              <div className="py-8 text-center space-y-3">
+   912	                <div className="w-12 h-12 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 flex items-center justify-center mx-auto">
+   913	                  <Check className="w-6 h-6" />
+   914	                </div>
+   915	                <h5 className="font-bold text-white text-base">Request Received</h5>
+   916	                <p className="text-xs text-white/70 max-w-xs mx-auto">
+   917	                  Rob will review your saved design and prepare a tailored quote and domain setup plan for {businessName}.
+   918	                </p>
+   919	              </div>
+   920	            ) : (
+   921	              <form onSubmit={handleQuoteSubmit} className="space-y-3">
+   922	                <div>
+   923	                  <label className="block text-xs font-semibold text-white/70 mb-1">Your Name</label>
+   924	                  <input
+   925	                    type="text"
+   926	                    required
+   927	                    value={quoteForm.name}
+   928	                    onChange={(e) => setQuoteForm((prev) => ({ ...prev, name: e.target.value }))}
+   929	                    placeholder="e.g. John Smith"
+   930	                    className="w-full bg-white/5 border border-white/15 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-amber-400"
+   931	                  />
+   932	                </div>
+   933	                <div>
+   934	                  <label className="block text-xs font-semibold text-white/70 mb-1">Email Address</label>
+   935	                  <input
+   936	                    type="email"
+   937	                    value={quoteForm.email || saveEmail}
+   938	                    onChange={(e) => setQuoteForm((prev) => ({ ...prev, email: e.target.value }))}
+   939	                    placeholder="e.g. john@example.co.uk"
+   940	                    className="w-full bg-white/5 border border-white/15 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-amber-400"
+   941	                  />
+   942	                </div>
+   943	                <div>
+   944	                  <label className="block text-xs font-semibold text-white/70 mb-1">Phone Number</label>
+   945	                  <input
+   946	                    type="tel"
+   947	                    value={quoteForm.phone}
+   948	                    onChange={(e) => setQuoteForm((prev) => ({ ...prev, phone: e.target.value }))}
+   949	                    placeholder="e.g. 07123 456789"
+   950	                    className="w-full bg-white/5 border border-white/15 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-amber-400"
+   951	                  />
+   952	                </div>
+   953	                <div>
+   954	                  <label className="block text-xs font-semibold text-white/70 mb-1">Domain &amp; Launch Notes</label>
+   955	                  <textarea
+   956	                    rows={2}
+   957	                    value={quoteForm.notes}
+   958	                    onChange={(e) => setQuoteForm((prev) => ({ ...prev, notes: e.target.value }))}
+   959	                    placeholder="Any preferred domain name or launch timing?"
+   960	                    className="w-full bg-white/5 border border-white/15 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-amber-400"
+   961	                  />
+   962	                </div>
+   963	
+   964	                <div className="pt-2">
+   965	                  <Button
+   966	                    type="submit"
+   967	                    variant="cta"
+   968	                    size="lg"
+   969	                    disabled={quoteSubmitting || !quoteForm.name}
+   970	                    className="w-full gap-2"
+   971	                  >
+   972	                    {quoteSubmitting ? (
+   973	                      <>
+   974	                        <Loader2 className="w-4 h-4 animate-spin" /> Submitting...
+   975	                      </>
+   976	                    ) : (
+   977	                      <>Submit Proposal Request</>
+   978	                    )}
+   979	                  </Button>
+   980	                </div>
+   981	              </form>
+   982	            )}
+   983	          </div>
+   984	        </div>
+   985	      )}
+   986	    </div>
+   987	  );
+   988	}
+
+

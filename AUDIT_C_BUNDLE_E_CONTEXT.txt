@@ -1,0 +1,854 @@
+===== FILE: geminx-v2/package.json =====
+===== SHA256: cb1334194e76006b3f05c696a43983f9dfcea80ead3c7b9b3002bfa8515d2e48 =====
+===== LINES: 41 =====
+     1	{
+     2	  "name": "geminx-v2",
+     3	  "version": "0.1.0",
+     4	  "description": "GeminX V2 backend — slice/001-foundation",
+     5	  "main": "dist/server.js",
+     6	  "scripts": {
+     7	    "dev": "tsx watch src/server.ts",
+     8	    "build": "node -e \"const fs=require('fs'); const p='src/modules/creator_self_heal/astra-repair-warden.ts'; if(!fs.existsSync(p)) throw new Error('WARDEN_FILE_MISSING'); const s=fs.readFileSync(p,'utf8'); if(!s.includes('CREATOR_ASTRA_WARDEN_INCOMPLETE_BRIEF') || !s.includes('diagnoseCreatorRepairWithAstra')) throw new Error('WARDEN_SOURCE_MISMATCH'); console.log('WARDEN_SOURCE_PRESENT')\" && vitest run tests/creator-astra-repair-warden.test.ts tests/openclaw-model-proxy.test.ts && tsc -p tsconfig.cloud.json && vitest run tests/digital-ambush-preview-bridge.test.ts tests/digital-ambush-prospect-url-isolation.test.ts",
+     9	    "start": "node dist/server.js",
+    10	    "typecheck": "tsc --noEmit -p tsconfig.cloud.json",
+    11	    "test": "vitest run",
+    12	    "train:geminx-rl": "python3 scripts/geminx_rl_once.py",
+    13	    "test:operator": "node scripts/geminx-operator-regression.mjs",
+    14	    "test:operator:full": "node scripts/geminx-operator-regression.mjs --full",
+    15	    "studio:worker": "node scripts/roblox-studio-worker.mjs",
+    16	    "studio:worker:verify-once": "node scripts/roblox-studio-official-mcp-worker.mjs",
+    17	    "ag:cloud-worker": "tsx scripts/cloud-ag-worker.ts",
+    18	    "audit:hq-controls": "node scripts/build-hq-control-acceptance-matrix.mjs",
+    19	    "test:chaos": "tsx scripts/run-chaos-harness.ts",
+    20	    "test:chaos:llm": "GEMINX_CHAOS_REQUIRE_LLM=1 tsx scripts/run-chaos-harness.ts",
+    21	    "smoke:production-readiness": "node scripts/production-runtime-readiness-smoke.mjs"
+    22	  },
+    23	  "dependencies": {
+    24	    "express": "^4.18.2",
+    25	    "puppeteer": "^25.16.0"
+    26	  },
+    27	  "devDependencies": {
+    28	    "@types/express": "^4.17.21",
+    29	    "@types/node": "^20.11.0",
+    30	    "tsx": "^4.7.0",
+    31	    "typescript": "^5.3.3",
+    32	    "vitest": "^4.1.5"
+    33	  },
+    34	  "engines": {
+    35	    "node": ">=20"
+    36	  },
+    37	  "overrides": {
+    38	    "body-parser": "^2.4.0",
+    39	    "proxy-addr": "^2.0.8"
+    40	  }
+    41	}
+
+
+===== FILE: geminx-v2/tsconfig.json =====
+===== SHA256: 8676de95adeb3dbf4e4bdde8a586601e4c78a33847391103e0ef4b5e90040ab4 =====
+===== LINES: 18 =====
+     1	{
+     2	  "compilerOptions": {
+     3	    "target": "ES2022",
+     4	    "module": "CommonJS",
+     5	    "moduleResolution": "node",
+     6	    "outDir": "dist",
+     7	    "rootDir": "src",
+     8	    "strict": true,
+     9	    "esModuleInterop": true,
+    10	    "skipLibCheck": true,
+    11	    "resolveJsonModule": true,
+    12	    "declaration": true,
+    13	    "declarationMap": true,
+    14	    "sourceMap": true
+    15	  },
+    16	  "include": ["src/**/*"],
+    17	  "exclude": ["node_modules", "dist"]
+    18	}
+
+
+===== FILE: geminx-v2/tsconfig.cloud.json =====
+===== SHA256: 74ec5bf1c4d6deccd109bb84720a0d017ba7cd7720e9a967c859dce29358cd4a =====
+===== LINES: 8 =====
+     1	{
+     2	  "extends": "./tsconfig.json",
+     3	  "exclude": [
+     4	    "node_modules",
+     5	    "dist",
+     6	    "src/modules/mcp/roblox-mcp-server.ts"
+     7	  ]
+     8	}
+
+
+===== FILE: geminx-v2/Dockerfile =====
+===== SHA256: d20df676da53dfb55c43d8335fb2121c0a7827fdde38f5558855a603228a1c9c =====
+===== LINES: 156 =====
+     1	FROM node:20-slim
+     2	RUN apt-get update && apt-get install -y --no-install-recommends \
+     3	    git curl unzip zip python3 ca-certificates ffmpeg fonts-dejavu-core \
+     4	    chromium \
+     5	    fonts-liberation \
+     6	    libasound2 \
+     7	    libatk-bridge2.0-0 \
+     8	    libatk1.0-0 \
+     9	    libc6 \
+    10	    libcairo2 \
+    11	    libcups2 \
+    12	    libdbus-1-3 \
+    13	    libexpat1 \
+    14	    libfontconfig1 \
+    15	    libgbm1 \
+    16	    libgcc1 \
+    17	    libglib2.0-0 \
+    18	    libgtk-3-0 \
+    19	    libnspr4 \
+    20	    libnss3 \
+    21	    libpango-1.0-0 \
+    22	    libpangocairo-1.0-0 \
+    23	    libstdc++6 \
+    24	    libx11-6 \
+    25	    libx11-xcb1 \
+    26	    libxcb1 \
+    27	    libxcomposite1 \
+    28	    libxcursor1 \
+    29	    libxdamage1 \
+    30	    libxext6 \
+    31	    libxfixes3 \
+    32	    libxi6 \
+    33	    libxrandr2 \
+    34	    libxrender1 \
+    35	    libxss1 \
+    36	    libxtst6 \
+    37	    xdg-utils \
+    38	  && curl -fsSL https://github.com/rojo-rbx/rojo/releases/download/v7.4.4/rojo-7.4.4-linux-x86_64.zip -o /tmp/rojo.zip \
+    39	  && unzip /tmp/rojo.zip -d /tmp/rojo \
+    40	  && install -m 0755 /tmp/rojo/rojo /usr/local/bin/rojo \
+    41	  && rojo --version \
+    42	  && zip -v >/dev/null \
+    43	  && rm -rf /tmp/rojo /tmp/rojo.zip \
+    44	  && rm -rf /var/lib/apt/lists/*
+    45	WORKDIR /app
+    46	COPY package*.json ./
+    47	RUN npm ci
+    48	COPY . .
+    49	# Emergency hardening is applied deterministically before compilation. This
+    50	# keeps the runtime protected even while GitHub Actions is unable to persist the
+    51	# generated source diff back to the repository.
+    52	RUN node scripts/red-green-harden-creator-worker.mjs
+    53	# Creator repair must fail closed unless the Astra/frontier diagnosis Warden is
+    54	# present and its ordering contract is covered by focused regression tests.
+    55	RUN node -e "const fs=require('fs'); const p='src/modules/creator_self_heal/astra-repair-warden.ts'; if(!fs.existsSync(p)) throw new Error('WARDEN_FILE_MISSING'); const s=fs.readFileSync(p,'utf8'); if(!s.includes('CREATOR_ASTRA_WARDEN_INCOMPLETE_BRIEF') || !s.includes('diagnoseCreatorRepairWithAstra')) throw new Error('WARDEN_SOURCE_MISMATCH'); console.log('WARDEN_SOURCE_PRESENT')"
+    56	RUN npx vitest run tests/roblox-structured-plan-compiler.test.ts
+    57	RUN npx vitest run tests/creator-adventure-obby-adapter.test.ts
+    58	RUN npx vitest run tests/roblox-template-matrix.test.ts
+    59	RUN npx vitest run tests/roblox-target-pool.test.ts
+    60	RUN npx vitest run tests/creator-astra-repair-warden.test.ts
+    61	RUN npx vitest run tests/creator-founder-test-identity.test.ts
+    62	# Zero-network, zero-provider-charge stock/ETF ML walk-forward regression.
+    63	RUN python3 -m unittest discover -s tests_python -p 'test_*.py' -v
+    64	RUN npx vitest run tests/global-equities-discovery.test.ts tests/equity-ml-research.test.ts tests/openclaw-model-proxy.test.ts tests/p0-token-economy-contract.test.ts tests/god-node-capability-contract.test.ts
+    65	# Proof that Sophie's offline video is an actual decoded MP4, not a renamed PNG.
+    66	RUN npx vitest run tests/sophie-entreprenuity-social-factory.test.ts tests/sophie-social-provider-truth.test.ts
+    67	RUN npx vitest run tests/cloud-ag-paper-clock.test.ts tests/cloud-ag-worker-dispatch.test.ts tests/agent-comms-tool.test.ts tests/paper-autopilot.test.ts tests/paper-trading.test.ts tests/market-data-tools.test.ts tests/neo-paper-proof-bridge.test.ts
+    68	RUN npx vitest run tests/device-operator.test.ts tests/device-workflow.test.ts tests/device-workflow-restart.test.ts tests/device-mutex-lease.test.ts tests/device-fcm-wake.test.ts tests/canonical-device-identity.test.ts tests/device-windows-legacy-compat.test.ts tests/system-operator-security.test.ts tests/geminx-system-file-edit.test.ts tests/ag-desktop-control-contract.test.ts tests/ag-desktop-input-contract.test.ts tests/ag-desktop-verified-input-step.test.ts tests/ag-live-desktop-contract.test.ts tests/ag-live-expired-session-recovery.test.ts
+    69	RUN npx vitest run tests/android-device-canonical-v3.test.ts tests/founder-media-absolute-deny.test.ts
+    70	# Exact release checks for fixed DeepSeek multi-tool transcripts and live paper isolation.
+    71	RUN npx vitest run tests/geminx-companion-tool-loop.test.ts tests/geminx-command-allowlist-regression.test.ts tests/h4-sweep-reclaim.test.ts
+    72	# AG 20-bar H4 / M15 confirmation and staged partial-exit regression.
+    73	RUN npx vitest run tests/tom-camp-h4-sweep.test.ts tests/h4-sweep-reclaim.test.ts tests/paper-trading.test.ts
+    74	# Three existing paper lanes: source-verified news and one-R stop, plus observational Fib/liquidity.
+    75	RUN npx vitest run tests/paper-shared-risk-research.test.ts tests/paper-trading.test.ts tests/h4-sweep-reclaim.test.ts
+    76	RUN node --check web/hq/hq-office-core.js && node --check web/hq/hq-office-agents.js && node --check web/hq/hq-office-timeline.js && node --check web/hq/hq-office-data.js && node --check web/hq/hq-office-view.js
+    77	RUN npx vitest run tests/hq-live-office-events.test.ts tests/hq-live-office-surface.test.ts
+    78	RUN npx vitest run tests/hq-office-desktop-scale.test.ts
+    79	# Actual renderer regression: orange heading columns, compact tables, hamburger and artifact dock.
+    80	RUN npx vitest run tests/hq-readable-responsive-workspace.test.ts
+    81	# P0 actual Chromium mobile chat-shell geometry, typography and AGX sizing QA.
+    82	RUN node scripts/hq-mobile-layout-browser-smoke.mjs
+    83	# Memory-safe isolated acceptance receipts: each fixture is its own process.
+    84	RUN npx vitest run --maxWorkers=1 tests/agx-codebase-harness.test.ts
+    85	RUN npx vitest run --maxWorkers=1 tests/agx-hq-precommit-browser.test.ts
+    86	RUN npx vitest run --maxWorkers=1 tests/github-adapter-canonical-ref.test.ts
+    87	RUN npx vitest run --maxWorkers=1 tests/geminx-tool-runtime.test.ts
+    88	RUN node --check web/hq/hq.js && node --check web/hq/hq-multitask-drawer.js && npx vitest run tests/hq-same-job-resume.test.ts tests/hq-multitask-drawer-data.test.ts tests/hq-auto-first-reply.test.ts tests/hq-once-only-replies.test.ts tests/hq-optimistic-identity-parity.test.ts
+    89	# Credential-free runtime private-scratch end-to-end proof and permission classifier.
+    90	RUN npx vitest run tests/geminx-scratch-qualification-proof.test.ts tests/hq-readonly-live-trace.test.ts
+    91	# Digital Ambush preview bridge auth is a mandatory executable release gate.
+    92	# Verify fail-closed legacy auth and company isolation with no network or provider spend.
+    93	RUN npx vitest run tests/digital-ambush-preview-bridge.test.ts
+    94	# Zero-provider-charge Founder cumulative spend and OpenClaw-parity tool-window regressions.
+    95	RUN npx vitest run tests/geminx-founder-cost-tool-parity.test.ts tests/geminx-paid-provider-retry-circuit.test.ts tests/neo-tool-loop-compaction.test.ts tests/geminx-conversation-store.test.ts tests/geminx-thinking-tool-roundtrip.test.ts
+    96	# P0: no synthetic model replies and safe same-job DeepSeek-to-Gemini failover.
+    97	RUN npx vitest run tests/deepseek-google-failover-no-canned.test.ts
+    98	RUN npx vitest run tests/ag-empowerment-e2e.test.ts
+    99	# Lock the GeminX CEO/ Digital Ambush and remote-first NEO continuity
+   100	# into the actual Railway image build (not merely local AG test transcripts).
+   101	# All nine office recipients must preserve durable restart/reply continuity; fail image before production otherwise.
+   102	RUN npx vitest run tests/fleet-agent-continuation.test.ts tests/inbox-restart-recovery.test.ts tests/comms-duplicate-scope.test.ts
+   103	# AG must see existing Railway/browser verification tools on first execution turn.
+   104	# Each independently verified contract runs in its own Vitest process.
+   105	# Avoid loading multiple high-import-surface suites into a single build worker.
+   106	RUN npx vitest run tests/native-antigravity-auto-tools.test.ts tests/antigravity-chat.test.ts tests/ag-runtime-gemini-routing.test.ts
+   107	# Cloud AGX receipt-backed SSE presentation must pass before deployment.
+   108	RUN node --check web/hq/hq-agx-trail.js && npx vitest run tests/agx-live-trail.test.ts
+   109	# Mandatory AG autonomous no-permission-loop and live-trail-recovery fixtures.
+   110	# Runs in the existing Railway image build, not a paid external agent or GitHub Actions.
+   111	RUN npx vitest run --maxWorkers=1 tests/ag-operator-continuation.test.ts tests/ag-hq-live-trail-recovery.test.ts
+   112	RUN npx vitest run tests/ag-live-qa-tool-exposure.test.ts
+   113	RUN npx vitest run tests/universal-model-router.test.ts
+   114	RUN npx vitest run tests/objective-continuity-and-macros.test.ts
+   115	RUN npx vitest run tests/geminx-ceo-digital-ambush.test.ts tests/ai-office-cosmic-web.test.ts tests/office-task-continuity.test.ts tests/office-neo-failover.test.ts
+   116	RUN npx vitest run tests/office-local-neo-readiness.test.ts tests/google-image-generation.test.ts tests/digital-ambush-stage-recovery.test.ts
+   117	# Mandatory active-runtime specialist research boot gate (Mark, Sophie, Kerry, Brian, Adam)
+   118	RUN npx vitest run tests/office-specialist-brain-boot.test.ts
+   119	# Brian's first-turn website tools, Google quota-safe retries and secret hygiene are release blockers.
+   120	RUN npx vitest run tests/brian-build-routing-recovery.test.ts
+   121	# Brian must use Google managed Interactions+Antigravity ONLY with a tenant-scoped preview authoring MCP principal.
+   122	RUN npx vitest run --maxWorkers=1 tests/brian-google-antigravity-authoring.test.ts
+   123	# Genuine Chromium precommit acceptance; failures prevent a new Brian preview commit.
+   124	RUN npx vitest run --maxWorkers=1 tests/brian-preview-visual-gate.test.ts
+   125	# Founder V5 must never skip section order, fabricate QA receipts or jump from header to full page.
+   126	RUN npx vitest run --maxWorkers=1 tests/brian-homepage-v5-build-coordinator.test.ts
+   127	# Durable V5 receipts, genuine PNG validation, Step 0 truth, and two-site isolation.
+   128	RUN npx vitest run --maxWorkers=1 tests/brian-v5-durable-qa.test.ts
+   129	RUN npx vitest run --maxWorkers=1 tests/brian-preview-live-mcp-canary.test.ts
+   130	RUN npx vitest run --maxWorkers=1 tests/brian-antigravity-dispatch-admission.test.ts
+   131	RUN npx vitest run --maxWorkers=1 tests/brian-v3-acceptance-credential-hygiene.test.ts
+   132	RUN npx vitest run --maxWorkers=1 tests/brian-crm-test-lead-readback.test.ts
+   133	RUN npx vitest run --maxWorkers=1 tests/brian-dom-lease-fencing.test.ts tests/digital-ambush-dom-stage.test.ts
+   134	RUN npx vitest run --maxWorkers=1 tests/brian-screenshot-durable-proof.test.ts tests/brian-v3-operator.test.ts
+   135	RUN npx vitest run --maxWorkers=1 tests/lane3-multi-agent-routing.test.ts
+   136	RUN npx vitest run --maxWorkers=1 tests/agx-managed-antigravity-routing.test.ts
+   137	# The eight-agent G1-G10 identity certification requires the Founder Windows brain mount (C:/Users/tauru/.openclaw/global-agent-brain), unavailable inside Railway Linux. Keep it as an explicit Windows-host test rather than reporting a synthetic CI pass. The portable Brian and AGX harness suites above remain mandatory.
+   138	# Directly lock the October forensic fixes into the native Railway build.
+   139	RUN npx vitest run tests/durable-objective-contract.test.ts tests/browser-operator-host-identity.test.ts tests/sentinel-interceptor.test.ts
+   140	# P0: native repair export + HTTP CommsStore FAILED receipt must pass before production.
+   141	RUN npx vitest run tests/neo-warden-repair-bridge.test.ts tests/neo-comms-no-false-green.test.ts
+   142	RUN npx tsc -p tsconfig.cloud.json
+   143	# Run the existing deterministic Founder operator parity and security suites before release.
+   144	# Uses no model tokens, touches no production devices or accounts.
+   145	RUN node scripts/geminx-operator-regression.mjs
+   146	RUN node --check web/hq/hq.js && node --check web/hq/hq-live.js && node --check web/hq/hq-founder.js && node --check web/hq/hq-browser.js && node --check web/hq/hq-mobile-first.js && node --check web/hq/hq-auth.js && node --check browser-host/host.mjs && node --check chrome-extension/service-worker.js && node --check chrome-extension/popup.js
+   147	RUN npm test -- tests/hq-background-stop-control.test.ts tests/founder-live-v2-operator.test.ts tests/ag-sentinel-brain-handshake.test.ts tests/antigravity-harness.test.ts tests/antigravity-chat.test.ts tests/hq-readonly-live-trace.test.ts tests/hq-live-execution-controls.test.ts tests/founder-live-schema.test.ts tests/hq-live-trace-browser-ux.test.ts tests/hq-browser-wait-chat.test.ts tests/hq-rich-media-chat.test.ts tests/newton-connector-bridge.test.ts tests/founder-durable-operator.test.ts tests/geminx-proactive-repair-reflex.test.ts tests/geminx-operator-parity.test.ts tests/geminx-tool-search.test.ts tests/hq-selectable-brain.test.ts tests/astra-companion-tool-loop.test.ts tests/runtime-capabilities-endpoint.test.ts tests/geminx-inbox-worker.test.ts tests/geminx-executor-failover.test.ts tests/geminx-engineering-quality.test.ts tests/hq-app-bible-mobile-release.test.ts tests/hq-mobile-release-contract.test.ts tests/hq-device-release-upgrade.test.ts tests/hq-regression-locks.test.ts tests/founder-hq-session.test.ts tests/founder-hq-recovery-session.test.ts tests/founder-hq-device-enrollment.test.ts tests/founder-hq-transparent-protected-recovery.test.ts tests/runtime-auth.test.ts tests/browser-operator-runtime.test.ts tests/creator-questionnaire-plan.test.ts tests/creator-questionnaire-capacity-recovery.test.ts tests/creator-self-inventory-cleanup.test.ts tests/browser-human-resume.test.ts tests/browser-human-control-broker.test.ts tests/browser-live-direct-control.test.ts tests/browser-waiting-recovery-reconciliation.test.ts tests/chrome-bridge-pairing.test.ts tests/chrome-bridge-extension.test.ts tests/hq-browser-smooth-takeover.test.ts tests/founder-response-style.test.ts tests/founder-objective-write-through.test.ts tests/companion-learning-loop.test.ts tests/geminx-companion-tool-loop.test.ts tests/companion-fast-intent.test.ts tests/runtime-capability-fast-intent.test.ts tests/neo-tool-loop-compaction.test.ts tests/neo-followup-capability-continuity.test.ts tests/durable-scheduled-message.test.ts tests/web-search-tool.test.ts tests/google-search-console-tool.test.ts tests/openai-key-alias.test.ts tests/shared-brain-hivemind.test.ts tests/geminx-phase5-brain-integrity.test.ts tests/founder-openclaw-continuity.test.ts tests/openclaw-remote-gateway.test.ts tests/openclaw-neo-hq-bridge.test.ts tests/geminx-conversation-store.test.ts tests/v7-gmail-native.test.ts tests/gmail-tool-runtime.test.ts tests/v7-ppl-outbound.test.ts tests/founder-outreach-media.test.ts tests/google-pubsub-oidc.test.ts tests/ppl-gmail-reply-reconcile.test.ts tests/gmail-push-route.test.ts tests/frontier-router-astra.test.ts tests/astra-background-polling.test.ts tests/inbox-restart-recovery.test.ts tests/hq-control-inventory.test.ts tests/geminx-same-run-recovery.test.ts tests/geminx-same-run-resume.integration.test.ts tests/durable-memory.test.ts tests/runtime-readiness.test.ts tests/windows-system-operator-recovery-contract.test.ts tests/studio-worker-heartbeat.test.ts
+   148	RUN node scripts/test-founder-hq-routing-smoke.mjs
+   149	RUN node scripts/critical-regression-gate.mjs
+   150	# The credential-free God Node chaos crucible is a deployment gate as well as a PR gate.
+   151	# A single failed synthetic mission, missing critical surface, or Warden invariant blocks the image.
+   152	RUN npm run test:chaos
+   153	RUN sed -i 's/\r$//' scripts/start-geminx-backend.sh && chmod +x scripts/start-geminx-backend.sh
+   154	EXPOSE 8080
+   155	ENV PORT=8080
+   156	CMD ["sh", "scripts/start-geminx-backend.sh"]
+
+===== FILE: geminx-v2/railway.json =====
+===== STATUS: MISSING =====
+===== SEARCHED: geminx-v2/railway.json, geminx-v2/railway.toml (found geminx-v2/.railwayignore) =====
+
+===== FILE: global-agent-brain/Audits/2026-11-08_ARGON4_NEWTON_RESPONSE_TO_GEMINI_FORENSIC_REVIEW.md =====
+===== STATUS: MISSING =====
+===== SEARCHED: global-agent-brain/Audits/ (co-located file found: 2026-11-08_ARGON4_NEWTON_GEMINI_RELIABILITY_GAUNTLET_V1.md) =====
+
+===== FILE: global-agent-brain/Audits/2026-11-08_ARGON4_NEWTON_GEMINI_RELIABILITY_GAUNTLET_V1.md (Co-located Gauntlet Response) =====
+===== SHA256: 166b7704c3abdca364fa4a01155c3bfaf14d04a76c51fa835f048039d1f4a53d =====
+===== LINES: 127 =====
+     1	# NEWTON × GEMINI | ARGON-4 FULL-STACK RELIABILITY GAUNTLET V1
+     2	
+     3	Date: 2026-11-08 UTC. Campaign key: GEMINX-ARGON4-RELIABILITY-20261108. **Status: NEWTON DRAFT, AWAITING GENUINE INDEPENDENT GEMINI REVIEW.** This file is neither Gemini approval nor proof that its tests have run. The Founder wants both brains to build and run a failure-first audit of the entire GeminX runtime, not merely Digital Ambush.
+     4	
+     5	## Mission and standard
+     6	
+     7	A Founder command submitted in the REAL HQ UI must reach the intended agent and correct provider intact, use authorized live tools, produce real independently inspected outputs, survive retry and restart without duplication, complete against exact acceptance criteria, and show the same state in Railway, GitHub, durable storage, the office floor and the actual production customer URL. **Healthy processes, HTTP 200, code commits, mocked screenshots, model narrative, and green unit tests are not enough.** Unknown or untested is never a pass. No platform can be proved perfect; prove defined critical journeys and measure remaining risk.
+     8	
+     9	Reuse repositories R1mob2-svg/geminx-v2, R1mob2-svg/webdesignaifusion and R1mob2-svg/global-agent-brain, existing GitHub Brain, Railway, Vercel, CommsStore, model router, browser operator, acceptance-campaign harness, chaos harness and Completion Warden. Do not create new queues, CRMs, ledgers, schedulers, agents, or redundant services. The audit campaign key is only a tracking key; a real job uses the existing canonical job ID plus lease. No external customer email, real-money trade, domain purchase, public publish, destructive action, or unapproved new model spend under a test pretext.
+    10	
+    11	### Evidence-derived baseline, not speculative fixes
+    12	
+    13	Start from existing 24-vector 8 November audit: Shared_State/Newton/2026-11-08_GEMINX_FAILURE_FIRST_RELIABILITY_AUDIT.md. Known observations include (1) duplicate ordinary Brian user turns and replies sharing one original client message ID; (2) source-level reason for office-floor showing GeminX rather than Brian: writer stores office_agent but event attribution ignores it; (3) a 10,021-character HQ command accepted, with shortened durable summaries later incorrectly treated as transport truncation; (4) blocked Google managed Antigravity execution awaiting provider reconciliation, not safe to blindly replay; (5) Saggu research brief created but full V6 homepage and six-viewport certified output absent; (6) latest V6.5 production promotion failed a session agent_id test, live customer domain still on older SHA; (7) generic template and false-completion fallback paths; (8) V6.5 view-to-edit capability risk and email format incorrectly treated as ownership verification; (9) AGX heartbeat with zero processed jobs and missing capabilities; (10) existing hourly Warden no_update despite known failures. Each is an audit hypothesis or observed defect with source receipt. Independently probe and revise; do NOT assume all ten are proven exploitable or that they are repaired.
+    14	
+    15	## Two-brain architecture and review protocol
+    16	
+    17	**Newton independent pass (Audit A):** freeze live source SHAs/deployments/UTC; build route-and-dependency inventory from actual source; run read-only live checks; produce candidate failures with reproduction conditions, evidence paths, severity, prior state, and exact negative test. Every claim labeled SOURCE-VERIFIED, LIVE-OBSERVED, INFERRED, UNTESTED or REFUTED. Capture cost/coverage, not grandiose pass percentages.
+    18	
+    19	**Gemini independent pass (Audit B):** before reading Newton's diagnostic conclusions, independently map the system's critical failure paths, source code, current runtime and acceptance tests. Challenge Newton's claims and locate omitted risks, unexpected trust boundaries, permission escalation, untruthful fallbacks and false-positive grading. Write at least TEN novel vectors, FIVE safe fault injections and THREE ways to fool the proposed grader. Independently rank by revenue impact, security, likelihood, blast radius and time to repair. Cite exact code paths and real SHA, distinguish an intended UX feature from a security vulnerability. No fake agreement.
+    20	
+    21	**Exchange:** Newton writes this full draft to canonical GitHub Brain and a pointer to existing Google Drive GEMINI_NEWTON_HANDSHAKE_LOG. Gemini responds in that SAME existing log with reply_to_message_id ARGON4-NEWTON-20261108-001 and its review link / JSON. Newton fetches the actual response and resolves each contradiction into CONFIRMED, DISPUTED, NEEDS_PROBE or REFUTED. AG repairs only verified faults on existing codebase. An independent checker (other brain and actual black-box tooling) verifies red-to-green plus unchanged existing journeys. The person who made a change cannot give final acceptance solely by asserting they tested it.
+    22	
+    23	**Critical challenge topics Gemini must examine:** public prospect view-to-edit semantics and capability design; whether body founder_authorized / x-founder-auth can actually grant privilege or only influence classification; duplicate durable user turns versus duplicate paid provider calls; coverage of old client-HTML fallback; precision of model-provider no-replay safeguards; test rewrites that swapped behavior tests for source-string checks; SaaS callback/webhook HMAC boundaries; stale provider session/resume behavior; actual deployment domain; all agent routes beyond Brian.
+    24	
+    25	## Audit physics: what to map before running any test
+    26	
+    27	Enumerate sources as a directed graph. Nodes: Founder HQ frontend route, browser listener, authenticated API route, middleware, runtime principal, office agent, AI provider/model, tool/action, durable inbox/lease, persistent store, external connector, worker, Railway deployment/volume, GitHub repo/branch/artifact, Vercel deployment/domain, CRM and human approval. Edges: reads, writes, delegates, can-call, authenticates, retries, resumes, sends, bills, deploys and verifies. Every edge must have an explicitly tested positive case, negative case, timeout/retry case, side-effect boundary, receipt ID, version/commit identity and rollback effect. Output discovered/covered/untested counts. A route never enumerated is a coverage gap, not healthy.
+    28	
+    29	Inventory from src/routes/index.ts, src/modules/tool_runtime/registry.ts, src/modules/geminx_engine/, model-router, cloud-ag-worker, browser-host, web/hq entrypoints, all pipeline scripts, config/critical-journeys.json, GitHub workflows, Railway service/env/status, Vercel project/domain/alias, Warden state and Drive Brain. Secret values must remain redacted.
+    30	
+    31	## 128 adversarial vectors (16 domains × 8 tests; DESIGNED, NOT EXECUTED)
+    32	
+    33	Each case requires input/expected result/fault injection and retained source and terminal receipts. Exact assertions to be formalized in existing Vitest, Puppeteer, chaos and HQ acceptance scripts.
+    34	
+    35	### A | HQ intent and conversation integrity
+    36	A01 Exact >10,000-char Unicode intent hash matches UI, API, stored job and provider input. A02 Browser refresh mid-token emits one response, no duplicate. A03 Re-submit same client_message_id twice yields one user turn, one assistant turn, at most one paid call. A04 Two simultaneous different messages preserve order. A05 Agent tab switch while background work runs never appends into wrong transcript. A06 Slow/late result tied to original conversation/job. A07 Mobile message composition, attachment limits, clipboard, 320/390px display. A08 Long response truncation explicitly signaled, never silently displayed as complete.
+    37	
+    38	### B | Agent identity, model policy and permissions
+    39	B01 Brian sender/recipient/office_agent/executor attribution correct in all event feeds. B02 Each specialist boots exact current Brain SHA, not stale V3/V4/V5. B03 Switching agents/models cannot leak context, token or actor principal. B04 Brian can't use AG-owned repair tool; AG can't impersonate Founder. B05 Untrusted founder_authorized/header flags cannot escalate. B06 Read-only request absolutely cannot mutate or use forbidden tools. B07 Human approval boundary preserved even when model demands override. B08 Handoff preserves original owner/lease, correct receiver, evidence and status.
+    40	
+    41	### C | Model routing, context, quotas and provider truth
+    42	C01 Actual Google Antigravity model and selected agent verifiable from provider receipt. C02 Configured-but-unavailable model is shown DEGRADED, not fake-ready. C03 Budget thresholds stop with honest charge ledger. C04 Quota 402/429, timeout, 502 and empty reply classified distinctly. C05 Context compaction preserves all original mandatory instructions and tool constraints. C06 Tool-call runaway capped and completed/blocked with full trace. C07 Ambiguous provider accepted-but-unknown outcome reconciled without duplicate side effects. C08 Same model/provider session never reused across unrelated client/agent contexts.
+    43	
+    44	### D | Tool registry, browser and system operator
+    45	D01 Advertised tool exists with valid schema and real host. D02 Browser navigate/click/type/observe/capture returns evidence byte hash. D03 Browser takeover grants/relinquishes human control safely. D04 System operator unavailable has no silent DOM/shell fallback. D05 Correct browser/desktop/device principal scope. D06 Tool timeout after possible mutation never automatically double-applies. D07 MCP auth/401/403/429 correctly classified and surfaced. D08 Tool response sanitizer forbids secrets and fabricated receipts.
+    46	
+    47	### E | Durable job, leases, recovery and exactly-once semantics
+    48	E01 Every accepted job has stable unique task ID and lease. E02 Two workers racing claim job: one authorized winner. E03 Restart after provider success before response: reconcile first. E04 Crash after tool side-effect before stored ack: no second mutation. E05 Heartbeat starvation doesn't prematurely kill legitimate work or leave immortal zombie. E06 Terminal/blocked/cancelled transitions monotonic with readback. E07 Same-objective continuation doesn't create recursive duplicate jobs. E08 Provider usage and spend reservation reconciled after interruption.
+    49	
+    50	### F | Data stores, Brain and context correctness
+    51	F01 Mirror readback matches actual GitHub SHA, not attempted push count. F02 Full original prompt exists separate from abbreviated memory summary. F03 Durable event hash chain and cursor have no skipped/reordered records. F04 Restarts preserve stores and Railway volumes. F05 Cross-tenant/prospect/company memory isolation. F06 2 writers cannot clobber same prospect/conversation state. F07 Stale Brain snapshot clearly marked stale and refreshed on next boot. F08 Logs, Drive mirrors and traces redact personal data/secrets.
+    52	
+    53	### G | Brian V6 authoring and Digital Ambush
+    54	G01 Real business source and ownership verified, not copycat. G02 Company logo/colours and photo licensing proven. G03 Brian authored actual site, not generic template or AG/NEO-authored impersonation. G04 Header-first 11-section blueprint with section receipts. G05 Six real browser viewports 320/390/430/768/1024/1440 validate DOM, visual media and responsive behavior. G06 Real preview URL resolves correct tested HTML and immutable source SHA, not SPA shell. G07 SecureID maps to actual right CRM prospect, expiry rules and approvals. G08 No customer outbound without Founder approval; internal-only safe full-chain canary.
+    55	
+    56	### H | Customer V6.5 live editor
+    57	H01 View-only cannot mint own edit capability. H02 Forged/expired/wrong-business edit token blocked. H03 Server confirms agent_id=brian, UI cannot fill missing identity. H04 Live HTML edit is persistent and visibly changed after reload. H05 Undo/redo/revisions do not destroy concurrent edit. H06 Save requires verified mailbox ownership, not email regex. H07 Quote and saved website bind to right CRM prospect once. H08 No generic fabricated Brian HTML if backend/authoring unavailable.
+    58	
+    59	### I | Release, CI, build and rollback
+    60	I01 Source SHA matches tested SHA, artifact SHA and actual live deployment. I02 Build determinism, package-lock/install and dependency security. I03 FAIL_TO_PASS red test and PASS_TO_PASS unchanged suite. I04 Real integration tests cannot be replaced by test-source string checks without loss of coverage. I05 Vercel production alias resolves current intended release and customer route. I06 Staging parity and isolated credentials/fixtures. I07 Canary/rollback to known-good SHA, no data loss or unexpected send. I08 Detect 7-day failed deployment cluster and stuck control-plane pending state.
+    61	
+    62	### J | Auth, privacy, prompt injection and multitenancy
+    63	J01 Every API path/alias has required auth/role. J02 Cookies, CSRF, CORS, token expiry and rotation. J03 Prompt injection in scraped sites/email/GitHub/Drive cannot override operator permissions. J04 Command injection/SSRF/traversal in tool args, image URL and files. J05 No capability token leakage through public endpoint/browser history/referrer/URL logs. J06 HTML sanitizer prevents unsafe script/iframe injection. J07 One prospect cannot read/edit another company's artifact or CRM. J08 No secrets in repo, releases, screenshots or automated receipts.
+    64	
+    65	### K | HQ office floor, drawer, mobile and voice
+    66	K01 Office floor uses actual executor, never dispatcher name in its place. K02 WORKING requires genuine live job/tool evidence, not only unrelated heartbeat. K03 Accurate blocked/failed/completed event timestamps and receipt drilldown. K04 Conversation drawers separate agents with correct title/pin/history. K05 Background job completion doesn't overwrite current active transcript. K06 Reconnect/resume guard suppresses duplicate submits. K07 Live voice vs dictation separate and correctly routed with mic permissions. K08 Mobile display and offline behavior show recoverable state, no ghost activity.
+    67	
+    68	### L | CRM, outreach, sales, comms and external approvals
+    69	L01 Real prospect discovery and enrichment dedupe. L02 Email identity correct business sender; do not silently switch to personal Gmail. L03 Draft/sent/queued/provider-delivered are distinct statuses with provider IDs. L04 Duplicate webhook/retry never double-sends. L05 Replies bind to correct client/thread and consent. L06 Social post scheduling/status has actual provider confirmation. L07 Quote/lead/domain state is durable and audited. L08 Purchases, outreach, customer publishing forbidden absent approval.
+    70	
+    71	### M | Other specialist and business lanes
+    72	M01 AG repair, tests, commit and deploy ownership real. M02 NEO browser/operator tasks have physical receipts. M03 Sophie social content/provider handoff real and approval-scoped. M04 Kerry customer comms use correct sender and thread. M05 Trading is paper-only, market data real, no live-money execution. M06 Penny Pod revenue claims reconcile against actual contracts/invoices/cash not fictional MRR. M07 Game creator emits working verified play/build artifacts rather than label-only pass. M08 Job hunter job links current, employer-direct, no unauthorized application.
+    73	
+    74	### N | Observability, capacity and on-call resilience
+    75	N01 Trace cross-links from HQ through tool/provider to artifact. N02 Distinguish HTTP availability vs business success SLO. N03 Warden no_update/stale cursor itself is alertable failure. N04 CPU/memory/disk/volume limits, OOM, saturation. N05 Network DNS/egress/GitHub/Google/Vercel service failure states visible. N06 Bounded queues/rate/concurrency and fairness between agents. N07 Proper redaction/retention of logs and transcripts. N08 Exact historical failure count and active deployment status not conflated.
+    76	
+    77	### O | Audit-the-audit anti-fake tests
+    78	O01 HTTP 200 with missing artifact MUST FAIL. O02 Screenshot from generic template instead of Brian MUST FAIL. O03 Successful response with agent_id missing MUST FAIL. O04 Short memory summary presented as full request MUST FAIL. O05 Stubbed tools producing 'completed' without external receipt MUST FAIL. O06 Duplicate request same ID with two turns MUST FAIL. O07 Commit exists but live Vercel SHA remains old MUST FAIL. O08 Uninventoried route / unrun level must be UNTESTED, never PASS.
+    79	
+    80	### P | Fault injection, load, canary and soak
+    81	P01 Ten isolated users/conversations operate concurrently without cross-pollution. P02 One synthetic job retried 100 times, provider invocation <=1. P03 Worker crash at each state transition retains durable work. P04 Provider accepted external side effect then network drops; reconcile safely. P05 Browser disconnect during visual QA safely resumes or blocks. P06 Backend preview bridge 503 with no generic fake customer site. P07 Controlled canary and exact-SHA rollback in isolated environment; no live customer harm. P08 24-72h production read-only observations via EXISTING Warden, clearly marked pending until finished, no duplicated scheduler.
+    82	
+    83	**All 128 vectors are DESIGN, not passed tests.** Each needs a concrete fixture, input, expected output, negative assertion, receipts, environment/ladder level, test runner command, and actor. Absence of test environment / credentials is a real blocker, not license to fake green.
+    84	
+    85	## Required test ladder
+    86	L0 Read-only inventory and static code/control-plane evidence. L1 deterministic unit/schemas/property tests. L2 real integration with ephemeral stores and mocked external providers. L3 isolated chaos/fault injection/load with no live prospect side effects. L4 authenticated READ-ONLY production log/status/source/alias/receipt verification. L5 REAL Founder HQ browser journey using authorized test-only identity and tightly bounded provider spend. L6 real customer-facing live edited and persisted site, company/prospect-verified, only after safe release and human approvals. A L2 pass NEVER upgrades to L5 or L6 merely because screenshots look good.
+    87	
+    88	## Grading and safety
+    89	Severity P0: unauthorized access/write/send/spend, duplicate side effect, false completion, wrong user data, unverified production release. P1: persistent execution dead end, wrong actor in office, missing actual proof on critical journey, stale deploy, unsafe fallback. P2: noncritical UX/performance degradation. Zero unresolved P0 and critical P1; 100% *inventoried* critical journeys tested and verified on required ladder; all anti-fake O01–O08 injected grader cases must fail when deliberately defective. For each fix: show red test before, code diff, green test after, PASS_TO_PASS existing test suite, actual deployed SHA, independent post-deploy readback. Security test must contain positive AND negative path.
+    90	
+    91	Use one JSON receipt per vector with fields campaign_key, vector_id, test_level, status PASS|FAIL|BLOCKED|UNTESTED, expected, actual, source_sha, runtime_sha, input_sha256, job_id, lease_id, actor_principal, office_agent, provider_interaction_id, tool_receipt_ids, artifact_sha256, runtime_url_verified, deployment_id, evidence_refs, executed_at_utc, verifier, severity, root_cause, red_test, green_test, regression_test, remediation_commit. Evidence pointers must actually exist. Aggregate verdict is worst applicable subtest, not percentage average. Do not expose secrets.
+    92	
+    93	## Existing harnesses to use
+    94	- scripts/run-geminx-acceptance-campaign.ts: actual HQ Puppeteer, existing V01–V10. Note it uses environment-supplied Founder and Companion tokens, no static embedded fallback.
+    95	- scripts/run-chaos-harness.ts and src/modules/chaos_evaluation: deterministic chaos engine. Extend rather than build another runner.
+    96	- scripts/critical-regression-gate.mjs with config/critical-journeys.json: CURRENTLY SEVEN named journey groups; none is an explicit end-to-end Brian authenticated/anonymous V6.5 customer lifecycle. Add necessary P0 journeys, don't simply replace tests with string assertions.
+    97	- scripts/verify-brian-live-editor-e2e.ts: isolated Chromium six-viewport QA. Inspect portability and hardcoded Windows path before relying on it as a cross-platform execution proof; it's not customer-domain proof.
+    98	- Existing CommsStore, Agent Brain event hashes, actual GitHub/Vercel/Railway receipts, Gemini–Newton handshake sheet and existing GeminX Completion Warden ID 6a90ae3860088191a3273356df4c284e.
+    99	- Tests must be run in an authorized repo execution workspace. These tool reads alone do not mean npm/vitest/Chromium ran.
+   100	
+   101	## Minimum execution sequence
+   102	M0 independently freeze source and deployment identity and inventory all nodes/edges. M1 execute read-only runtime and source audit, capture contradictions. M2 Gemini blind-review and reply, Newton reconciles disputed items. M3 run existing deterministic harness + new red tests and isolated injection, collect immutable artifacts. M4 AG repairs only verified root cause, red-to-green and regression tests, Gemini independent review. M5 governed production canary and live HQ end-to-end browser acceptance after human boundary, zero unauthorized outreach/spend. M6 24–72h observation under existing Warden; close only with explicit evidence and rollback ready. Show counts PASSED/FAILED/BLOCKED/UNTESTED per milestone. No automatic real customer mutations.
+   103	
+   104	## Gemini's precise reply request
+   105	Read the actual runtime/source independently, challenge each alleged defect and propose at least 10 new failure vectors, five fault injections and three anti-fake-grader cases. Identify anything that might cause a 'green but nonworking' user experience. For uncertain issues, give minimal counterexample/probe, not confident story. Return a STRICT JSON envelope with fields:
+   106	
+   107	{
+   108	  "campaign_key": "GEMINX-ARGON4-RELIABILITY-20261108",
+   109	  "role": "GEMINI_INDEPENDENT_REVIEWER",
+   110	  "reply_to_message_id": "ARGON4-NEWTON-20261108-001",
+   111	  "baseline_shas": {"geminx_v2": "", "webdesignaifusion": "", "global_agent_brain": ""},
+   112	  "verdict": "APPROVE|APPROVE_WITH_CHANGES|REJECT_WITH_EVIDENCE",
+   113	  "confirmed": [{"id": "", "evidence": "", "proposed_assertion": ""}],
+   114	  "disputed": [{"id": "", "counterevidence": "", "next_proof": ""}],
+   115	  "new_vectors": [{"id": "", "input": "", "expected": "", "fault": "", "receipt": ""}],
+   116	  "uncovered_routes_or_stores": [],
+   117	  "top_repairs": [{"rank": 1, "root_cause": "", "severity": "P0|P1|P2", "smallest_patch": "", "red_test": "", "live_acceptance": ""}],
+   118	  "execution_plan": {"read_only_first": true, "isolation": "staging_disposable", "reuses_current_harness": true, "external_sends": false},
+   119	  "links_to_proof": [],
+   120	  "unexecuted": [],
+   121	  "reviewed_at_utc": ""
+   122	}
+   123	
+   124	Respond in *existing* Gemini–Newton handshake log and reference reply_to_message_id; or hand JSON through Founder if direct writing unavailable. No Gemini sign-off can be claimed until a real Gemini reply is read.
+   125	
+   126	## Research references
+   127	Google SRE reproducible release/canary: https://sre.google/workbook/canarying-releases/ ; postmortems https://sre.google/workbook/postmortem-culture/ . OpenAI/Codex actual traced eval process: https://developers.openai.com/blog/eval-skills and https://developers.openai.com/cookbook/examples/agents_sdk/agent_improvement_loop ; audit eval graders themselves (low-coverage tests are unreliable): https://openai.com/index/separating-signal-from-noise-coding-evaluations/ ; iterative closed-loop repair: https://developers.openai.com/cookbook/examples/codex/build_iterative_repair_loops_with_codex . These are external design inspirations, not proof of GeminX implementations.
+
+
+===== FILE: geminx-v2/tests (Test listing - paths only) =====
+===== SHA256: cc22433fd62cc73651ea45a15ce42f20702fa9b4d32d5cf98194bc0384bf1ba7 =====
+===== LINES: 468 =====
+     1	tests/adversarial-behavioral-eval.test.ts
+     2	tests/ag-continuation-handoff.test.ts
+     3	tests/ag-cross-chat-repair.test.ts
+     4	tests/ag-desktop-control-contract.test.ts
+     5	tests/ag-desktop-input-contract.test.ts
+     6	tests/ag-desktop-uia-fallback.test.ts
+     7	tests/ag-desktop-verified-input-step.test.ts
+     8	tests/ag-deterministic-write-lane.test.ts
+     9	tests/ag-device-mesh-access.test.ts
+    10	tests/ag-empowerment-e2e.test.ts
+    11	tests/ag-hq-live-trail-recovery.test.ts
+    12	tests/ag-live-desktop-contract.test.ts
+    13	tests/ag-live-expired-session-recovery.test.ts
+    14	tests/ag-live-qa-tool-exposure.test.ts
+    15	tests/ag-market-mcp-canary.test.ts
+    16	tests/ag-objective-continuation.test.ts
+    17	tests/ag-objective-identity-evidence-regression.test.ts
+    18	tests/ag-objective-identity-milestone-receipts.test.ts
+    19	tests/ag-operator-continuation.test.ts
+    20	tests/ag-runtime-gemini-routing.test.ts
+    21	tests/ag-sentinel-brain-handshake.test.ts
+    22	tests/ag-sentinel-canonical-boot.test.ts
+    23	tests/ag-sentinel-live-canary.test.ts
+    24	tests/agent-brain-latest-comments.test.ts
+    25	tests/agent-comms-tool.test.ts
+    26	tests/agent-harness-full-fleet-v32.test.ts
+    27	tests/agent-harness-google-cache-transport-v32.test.ts
+    28	tests/agent-harness-google-capabilities-v32.test.ts
+    29	tests/agent-rbac-and-handoff.test.ts
+    30	tests/agx-codebase-harness.test.ts
+    31	tests/agx-hq-precommit-browser.test.ts
+    32	tests/agx-live-trail-v2.test.ts
+    33	tests/agx-live-trail.test.ts
+    34	tests/agx-managed-antigravity-routing.test.ts
+    35	tests/ai-office-cosmic-web.test.ts
+    36	tests/ambush-template-responsive.test.ts
+    37	tests/android-device-auth-recovery.test.ts
+    38	tests/android-device-canonical-v3.test.ts
+    39	tests/android-device-microphone.test.ts
+    40	tests/android-v3-canonical-cleanup.test.ts
+    41	tests/antigravity-chat.test.ts
+    42	tests/antigravity-harness.test.ts
+    43	tests/astra-background-polling.test.ts
+    44	tests/astra-companion-tool-loop.test.ts
+    45	tests/base-agent-harness-v32.test.ts
+    46	tests/behavioral-eval.test.ts
+    47	tests/brian-antigravity-dispatch-admission.test.ts
+    48	tests/brian-build-routing-recovery.test.ts
+    49	tests/brian-cloud-browser-recovery-contract.test.ts
+    50	tests/brian-crm-test-lead-readback.test.ts
+    51	tests/brian-dom-lease-fencing.test.ts
+    52	tests/brian-google-antigravity-authoring.test.ts
+    53	tests/brian-homepage-v5-build-coordinator.test.ts
+    54	tests/brian-live-client-editor.test.ts
+    55	tests/brian-preview-live-mcp-canary.test.ts
+    56	tests/brian-preview-visual-gate.test.ts
+    57	tests/brian-screenshot-durable-proof.test.ts
+    58	tests/brian-v3-acceptance-credential-hygiene.test.ts
+    59	tests/brian-v3-adversarial-and-acceptance.test.ts
+    60	tests/brian-v3-operator.test.ts
+    61	tests/brian-v5-durable-qa.test.ts
+    62	tests/brian-v6-universal-engine.test.ts
+    63	tests/browser-human-control-broker.test.ts
+    64	tests/browser-human-resume.test.ts
+    65	tests/browser-live-direct-control.test.ts
+    66	tests/browser-observable-actions.test.ts
+    67	tests/browser-operator-host-identity.test.ts
+    68	tests/browser-operator-runtime.test.ts
+    69	tests/browser-vercel-auto-auth.test.ts
+    70	tests/browser-waiting-recovery-reconciliation.test.ts
+    71	tests/canary-3stage-autonomy.test.ts
+    72	tests/canonical-device-identity.test.ts
+    73	tests/chaos-evaluation-harness.test.ts
+    74	tests/chrome-bridge-extension.test.ts
+    75	tests/chrome-bridge-pairing.test.ts
+    76	tests/cloud-ag-dedicated-inbox-ownership.test.ts
+    77	tests/cloud-ag-paper-clock.test.ts
+    78	tests/cloud-ag-worker-dispatch.test.ts
+    79	tests/cloud-ag-worker.test.ts
+    80	tests/coding-workspace-verification.test.ts
+    81	tests/comms-duplicate-scope.test.ts
+    82	tests/companion-fast-intent.test.ts
+    83	tests/companion-learning-loop.test.ts
+    84	tests/composio-mcp-runtime-supervisor.test.ts
+    85	tests/cosmic-web-agent-senses.test.ts
+    86	tests/cosmic-web-provider-health-and-multimodel.test.ts
+    87	tests/cosmic-web-shared-runtime-truth.test.ts
+    88	tests/creator-adventure-obby-adapter.test.ts
+    89	tests/creator-astra-repair-warden.test.ts
+    90	tests/creator-brain-reporter.test.ts
+    91	tests/creator-capacity-proof.test.ts
+    92	tests/creator-capacity-startup-proof.test.ts
+    93	tests/creator-cloud-no-founder-pc.test.ts
+    94	tests/creator-compliance-profile.test.ts
+    95	tests/creator-founder-test-identity.test.ts
+    96	tests/creator-full-geminx-chat.test.ts
+    97	tests/creator-genre-authority.test.ts
+    98	tests/creator-historical-target-proof.test.ts
+    99	tests/creator-prepublish-mismatch-reconciler.test.ts
+   100	tests/creator-questionnaire-capacity-recovery.test.ts
+   101	tests/creator-questionnaire-plan.test.ts
+   102	tests/creator-run-durable-state-authority.test.ts
+   103	tests/creator-self-heal-retry-until-pass.test.ts
+   104	tests/creator-self-heal-wake.test.ts
+   105	tests/creator-self-healing-api-lock.test.ts
+   106	tests/creator-self-healing-artifact-lineage.test.ts
+   107	tests/creator-self-healing-ast-sanitizer.test.ts
+   108	tests/creator-self-healing-circuit-breaker.test.ts
+   109	tests/creator-self-healing-docker-persistence.test.ts
+   110	tests/creator-self-healing-hardening.test.ts
+   111	tests/creator-self-healing-model-routing.test.ts
+   112	tests/creator-self-healing-retry-loop.test.ts
+   113	tests/creator-self-healing-shadow-merge.test.ts
+   114	tests/creator-self-healing-transaction-safety.test.ts
+   115	tests/creator-self-healing.test.ts
+   116	tests/creator-self-inventory-cleanup.test.ts
+   117	tests/creator-source-fixture-quarantine.test.ts
+   118	tests/creator-studio-lease-sweeper.test.ts
+   119	tests/creator-warden-playability.test.ts
+   120	tests/creator-warden-status.test.ts
+   121	tests/creator-warden-target-reallocation.test.ts
+   122	tests/cross-lane-truth.test.ts
+   123	tests/deepseek-google-failover-no-canned.test.ts
+   124	tests/device-control-upgrade.test.ts
+   125	tests/device-fcm-wake.test.ts
+   126	tests/device-mesh-pc-remote.test.ts
+   127	tests/device-mutex-lease.test.ts
+   128	tests/device-operator.test.ts
+   129	tests/device-windows-legacy-compat.test.ts
+   130	tests/device-workflow-restart.test.ts
+   131	tests/device-workflow.test.ts
+   132	tests/digital-ambush-dom-stage.test.ts
+   133	tests/digital-ambush-hq-truth-gates.test.ts
+   134	tests/digital-ambush-image-factory-v2.test.ts
+   135	tests/digital-ambush-preview-bridge.test.ts
+   136	tests/digital-ambush-prospect-url-isolation.test.ts
+   137	tests/digital-ambush-stage-recovery.test.ts
+   138	tests/digital-ambush-stop-line-contract.test.ts
+   139	tests/durable-memory.test.ts
+   140	tests/durable-objective-contract.test.ts
+   141	tests/durable-scheduled-message.test.ts
+   142	tests/eight-agent-g1-g10-certification.test.ts
+   143	tests/equity-ml-research.test.ts
+   144	tests/evolution-gate-identity-store.test.ts
+   145	tests/evolution-gate-private-board.test.ts
+   146	tests/evolution-gate.test.ts
+   147	tests/execution-fault-journal.test.ts
+   148	tests/fast-intent-runtime-capability-routing.test.ts
+   149	tests/fixtures/concurrent-allocator.ts
+   150	tests/fixtures/concurrent-stale-lock.ts
+   151	tests/fixtures/disposable-math.test.ts
+   152	tests/fixtures/disposable-math.ts
+   153	tests/fleet-agent-continuation.test.ts
+   154	tests/founder-durable-operator.test.ts
+   155	tests/founder-hq-device-enrollment.test.ts
+   156	tests/founder-hq-recovery-session.test.ts
+   157	tests/founder-hq-session.test.ts
+   158	tests/founder-hq-transparent-protected-recovery.test.ts
+   159	tests/founder-live-schema.test.ts
+   160	tests/founder-live-token.test.ts
+   161	tests/founder-live-v2-operator.test.ts
+   162	tests/founder-media-absolute-deny.test.ts
+   163	tests/founder-moltbook-key-paste.test.ts
+   164	tests/founder-moltbook-recovery-ui.test.ts
+   165	tests/founder-notifications-newton-mirror.test.ts
+   166	tests/founder-objective-write-through.test.ts
+   167	tests/founder-openclaw-continuity.test.ts
+   168	tests/founder-outreach-media.test.ts
+   169	tests/founder-response-style.test.ts
+   170	tests/founder-windows-studio-mcp-wiring.test.ts
+   171	tests/frontier-learning-control-plane.test.ts
+   172	tests/frontier-router-astra.test.ts
+   173	tests/game-library.test.ts
+   174	tests/game-vault-schema-lineage.test.ts
+   175	tests/gauntlet-v04-resume-safety.test.ts
+   176	tests/gauntlet-v10-proof.test.ts
+   177	tests/geminex-context-hygiene.test.ts
+   178	tests/geminex-primary-identity.test.ts
+   179	tests/gemini-vision-retry.test.ts
+   180	tests/geminx-autonomous-task-routing.test.ts
+   181	tests/geminx-bounded-staging.test.ts
+   182	tests/geminx-brain-scoping.test.ts
+   183	tests/geminx-ceo-digital-ambush.test.ts
+   184	tests/geminx-command-allowlist-regression.test.ts
+   185	tests/geminx-commit-failure.test.ts
+   186	tests/geminx-companion-brain.test.ts
+   187	tests/geminx-companion-runtime.test.ts
+   188	tests/geminx-companion-tool-loop.test.ts
+   189	tests/geminx-companion.test.ts
+   190	tests/geminx-context-checkpoint.test.ts
+   191	tests/geminx-conversation-store.test.ts
+   192	tests/geminx-engine.test.ts
+   193	tests/geminx-engineering-quality.test.ts
+   194	tests/geminx-escalation-persistence.test.ts
+   195	tests/geminx-escalation.test.ts
+   196	tests/geminx-executor-failover.test.ts
+   197	tests/geminx-founder-chat-p0.test.ts
+   198	tests/geminx-founder-cost-tool-parity.test.ts
+   199	tests/geminx-git-preconditions.test.ts
+   200	tests/geminx-inbox-worker.test.ts
+   201	tests/geminx-kernel-memory-contract.test.ts
+   202	tests/geminx-mcp-chatgpt.test.ts
+   203	tests/geminx-model-first-diagnostics.test.ts
+   204	tests/geminx-nexus-crucible.test.ts
+   205	tests/geminx-operator-parity.test.ts
+   206	tests/geminx-operator-security-boundary.test.ts
+   207	tests/geminx-paid-provider-retry-circuit.test.ts
+   208	tests/geminx-path-safety-adversarial.test.ts
+   209	tests/geminx-phase5-brain-integrity.test.ts
+   210	tests/geminx-post-commit-head-verification.test.ts
+   211	tests/geminx-proactive-repair-reflex.test.ts
+   212	tests/geminx-queue-tools.test.ts
+   213	tests/geminx-railway-tool-runtime.test.ts
+   214	tests/geminx-resume-capability-preflight.test.ts
+   215	tests/geminx-rollback.test.ts
+   216	tests/geminx-runtime-list-integrity.test.ts
+   217	tests/geminx-runtime-restart-persistence.test.ts
+   218	tests/geminx-runtime-restart.test.ts
+   219	tests/geminx-same-run-recovery.test.ts
+   220	tests/geminx-same-run-resume.integration.test.ts
+   221	tests/geminx-scratch-qualification-proof.test.ts
+   222	tests/geminx-subtask-identity.test.ts
+   223	tests/geminx-symlink-boundary.test.ts
+   224	tests/geminx-system-file-edit.test.ts
+   225	tests/geminx-thinking-tool-roundtrip.test.ts
+   226	tests/geminx-tool-runtime.test.ts
+   227	tests/geminx-tool-search.test.ts
+   228	tests/geminx-top-tier-operator-acceptance.test.ts
+   229	tests/geminx-v2-deferred-brain.test.ts
+   230	tests/geminx-worker-provenance.test.ts
+   231	tests/github-adapter-canonical-ref.test.ts
+   232	tests/github-api-user-connection.test.ts
+   233	tests/github-get-issue-tool.test.ts
+   234	tests/global-equities-discovery.test.ts
+   235	tests/gmail-push-route.test.ts
+   236	tests/gmail-tool-runtime.test.ts
+   237	tests/god-node-capability-contract.test.ts
+   238	tests/god-node-zero-trust-certification.test.ts
+   239	tests/google-image-generation.test.ts
+   240	tests/google-maps-tools.test.ts
+   241	tests/google-pubsub-oidc.test.ts
+   242	tests/google-search-console-tool.test.ts
+   243	tests/h4-sweep-reclaim.test.ts
+   244	tests/helpers/local-supertest.ts
+   245	tests/hq-ag-cosmic-visibility.test.ts
+   246	tests/hq-all-office-durable-owner.test.ts
+   247	tests/hq-app-bible-mobile-release.test.ts
+   248	tests/hq-auto-first-reply.test.ts
+   249	tests/hq-b2b-sales-v3.test.ts
+   250	tests/hq-background-stop-control.test.ts
+   251	tests/hq-browser-smooth-takeover.test.ts
+   252	tests/hq-browser-wait-chat.test.ts
+   253	tests/hq-chat-first-v3.test.ts
+   254	tests/hq-companion-ui-contract.test.ts
+   255	tests/hq-control-inventory.test.ts
+   256	tests/hq-cosmic-web-visibility.test.ts
+   257	tests/hq-device-release-upgrade.test.ts
+   258	tests/hq-founder-control-plane.test.ts
+   259	tests/hq-inner-error-propagation.test.ts
+   260	tests/hq-live-execution-controls.test.ts
+   261	tests/hq-live-office-events.test.ts
+   262	tests/hq-live-office-surface.test.ts
+   263	tests/hq-live-trace-browser-ux.test.ts
+   264	tests/hq-localhost-bridge.test.ts
+   265	tests/hq-mobile-release-contract.test.ts
+   266	tests/hq-multitask-drawer-data.test.ts
+   267	tests/hq-office-desktop-scale.test.ts
+   268	tests/hq-office-identity-response-boundary.test.ts
+   269	tests/hq-once-only-replies.test.ts
+   270	tests/hq-optimistic-identity-parity.test.ts
+   271	tests/hq-page-isolation.test.ts
+   272	tests/hq-phase1-evidence-readback.test.ts
+   273	tests/hq-projects-api.test.ts
+   274	tests/hq-readable-responsive-workspace.test.ts
+   275	tests/hq-readonly-live-trace.test.ts
+   276	tests/hq-real-ag-chat.test.ts
+   277	tests/hq-regression-locks.test.ts
+   278	tests/hq-research-trace-quality.test.ts
+   279	tests/hq-rich-media-chat.test.ts
+   280	tests/hq-same-job-resume.test.ts
+   281	tests/hq-selectable-brain.test.ts
+   282	tests/hq-split-brain-respond.test.ts
+   283	tests/hq-three-agent-neo-openclaw.test.ts
+   284	tests/ide-l2-retry-finalisation.test.ts
+   285	tests/inbox-restart-recovery.test.ts
+   286	tests/integrations-marketplace.test.ts
+   287	tests/invariants/native-host-credentials.test.ts
+   288	tests/jules-lane-09-artifact-storage.test.ts
+   289	tests/jules-lane-12-load-fault-harness.test.ts
+   290	tests/jules-worker-durable-restart.test.ts
+   291	tests/kerry-canary-claim-policy.test.ts
+   292	tests/kid-creator-template-blueprints.test.ts
+   293	tests/lane2-model-finalisation-recovery.test.ts
+   294	tests/lane3-multi-agent-routing.test.ts
+   295	tests/lane4-system-integrity.test.ts
+   296	tests/level6-founder-execution-e2e.test.ts
+   297	tests/live-dispatch-v33.test.ts
+   298	tests/luau-security-firewall.test.ts
+   299	tests/mail-failure-tombstone-isolation.test.ts
+   300	tests/market-cloud-fallback.test.ts
+   301	tests/market-data-tools.test.ts
+   302	tests/media-export-token-security.test.ts
+   303	tests/minecraft-bedrock-files.test.ts
+   304	tests/model-core-free-first.test.ts
+   305	tests/model-router.test.ts
+   306	tests/native-antigravity-auto-tools.test.ts
+   307	tests/native-neo-conversation-guard.test.ts
+   308	tests/neo-brain-correct-scope.test.ts
+   309	tests/neo-comms-no-false-green.test.ts
+   310	tests/neo-context-window-budget.test.ts
+   311	tests/neo-cross-device-continuity.test.ts
+   312	tests/neo-followup-capability-continuity.test.ts
+   313	tests/neo-image-provider-quota-recovery.test.ts
+   314	tests/neo-paper-proof-bridge.test.ts
+   315	tests/neo-real-worker-bridge.test.ts
+   316	tests/neo-runtime-repair-depth.test.ts
+   317	tests/neo-selfrepair-closed-loop.test.ts
+   318	tests/neo-session-truth.test.ts
+   319	tests/neo-tool-bridge.test.ts
+   320	tests/neo-tool-loop-compaction.test.ts
+   321	tests/neo-warden-repair-bridge.test.ts
+   322	tests/newton-connector-bridge.test.ts
+   323	tests/newton-lane2-review-requirements.test.ts
+   324	tests/objective-completion-gate.test.ts
+   325	tests/objective-continuity-and-macros.test.ts
+   326	tests/obsolete-cloud-migration-binding.test.ts
+   327	tests/office-agent-harness-bridge.test.ts
+   328	tests/office-agent-harness.test.ts
+   329	tests/office-local-neo-readiness.test.ts
+   330	tests/office-market-tool-rbac.test.ts
+   331	tests/office-neo-failover.test.ts
+   332	tests/office-specialist-brain-boot.test.ts
+   333	tests/office-task-continuity.test.ts
+   334	tests/openai-astra-credential-resolution.test.ts
+   335	tests/openai-key-alias.test.ts
+   336	tests/openclaw-cli-windows-spawn.test.ts
+   337	tests/openclaw-device-bridge-reconciliation.test.ts
+   338	tests/openclaw-model-proxy.test.ts
+   339	tests/openclaw-neo-hq-bridge.test.ts
+   340	tests/openclaw-neo-startup-canary.test.ts
+   341	tests/openclaw-remote-gateway.test.ts
+   342	tests/openclaw-warden-core.test.ts
+   343	tests/openclaw-warden-diagnostic.test.ts
+   344	tests/openclaw-windows-node-bootstrap.test.ts
+   345	tests/openrouter-free-tier0.test.ts
+   346	tests/operator-runtime-invariants.test.ts
+   347	tests/operator/argon_loop_acceptance.test.ts
+   348	tests/p0-token-economy-contract.test.ts
+   349	tests/paper-autopilot.test.ts
+   350	tests/paper-shared-risk-research.test.ts
+   351	tests/paper-trading.test.ts
+   352	tests/penny-pod-command-bus.test.ts
+   353	tests/penny-pod-gateway.test.ts
+   354	tests/penny-pod-moltbook.test.ts
+   355	tests/penny-pod-the402.test.ts
+   356	tests/ppl-gmail-reply-reconcile.test.ts
+   357	tests/private-agent-board-evolution-route.test.ts
+   358	tests/private-agent-board-route.test.ts
+   359	tests/private-agent-board.test.ts
+   360	tests/pro-think-only-flash-exec.test.ts
+   361	tests/prompt-to-reply-reliability.test.ts
+   362	tests/provider-id-and-artifact-validators.test.ts
+   363	tests/publication-receipt-exact-sha.test.ts
+   364	tests/reap-known-synthetic-founder-tests.test.ts
+   365	tests/reconciliation-pipeline.test.ts
+   366	tests/resume-protection.test.ts
+   367	tests/retire-exact-founder-authorized-test.test.ts
+   368	tests/retire-exact-synthetic-founder-test.test.ts
+   369	tests/retired-founder-reprovision-reachability.test.ts
+   370	tests/retired-founder-target-identity-reprovision.test.ts
+   371	tests/retired-founder-target-quarantine.test.ts
+   372	tests/roblox-ab-identity-proof.test.ts
+   373	tests/roblox-auth-capability-matrix.test.ts
+   374	tests/roblox-cloud-test-place-lease.test.ts
+   375	tests/roblox-cloud-validation-canonical-lifecycle.test.ts
+   376	tests/roblox-cloud-validation-suite.test.ts
+   377	tests/roblox-cloud-validation.test.ts
+   378	tests/roblox-creator-files.test.ts
+   379	tests/roblox-creator-integration.test.ts
+   380	tests/roblox-live-join-authority.test.ts
+   381	tests/roblox-mcp-adapter-regression.test.ts
+   382	tests/roblox-native-invite-generated.test.ts
+   383	tests/roblox-oauth-lifecycle.test.ts
+   384	tests/roblox-obby-starter.test.ts
+   385	tests/roblox-playability-gate.test.ts
+   386	tests/roblox-private-founder-test-recovery.test.ts
+   387	tests/roblox-production-publish-contract.test.ts
+   388	tests/roblox-publish-orchestrator-contract.test.ts
+   389	tests/roblox-publish-provider-identity.test.ts
+   390	tests/roblox-publish-recovery.test.ts
+   391	tests/roblox-quality-gate.test.ts
+   392	tests/roblox-root-enroll-quarantine.test.ts
+   393	tests/roblox-root-target-discovery.test.js
+   394	tests/roblox-staging-target-lifecycle.test.ts
+   395	tests/roblox-structured-plan-compiler.test.ts
+   396	tests/roblox-studio-ai-oracle.test.ts
+   397	tests/roblox-studio-exact-selection-current.test.ts
+   398	tests/roblox-studio-exact-selection.test.ts
+   399	tests/roblox-studio-queue-contract.test.ts
+   400	tests/roblox-studio-validation-analytics-proof.test.ts
+   401	tests/roblox-studio-validation-oracle.test.ts
+   402	tests/roblox-studio-validation.test.ts
+   403	tests/roblox-studio-worker-direct-target.test.ts
+   404	tests/roblox-target-e-startup-contract.test.ts
+   405	tests/roblox-target-pool.test.ts
+   406	tests/roblox-template-matrix.test.ts
+   407	tests/routes-coverage-expansion.test.ts
+   408	tests/runtime-auth.test.ts
+   409	tests/runtime-capabilities-endpoint.test.ts
+   410	tests/runtime-capabilities.test.ts
+   411	tests/runtime-capability-fast-intent.test.ts
+   412	tests/runtime-preflight-api.test.ts
+   413	tests/runtime-preflight-evidence-regression.test.ts
+   414	tests/runtime-readiness-scope-split.test.ts
+   415	tests/runtime-readiness.test.ts
+   416	tests/runtime-store-identity-provenance.test.ts
+   417	tests/runtime-store-persistence.test.ts
+   418	tests/runway-provider-truth.test.ts
+   419	tests/self-repair-bridge.test.ts
+   420	tests/self-repair-local-gate-and-auditor.test.ts
+   421	tests/sentinel-interceptor.test.ts
+   422	tests/shared-brain-hivemind.test.ts
+   423	tests/sophie-cloud-failure-ag-handoff.test.ts
+   424	tests/sophie-cloud-website-review-harness.test.ts
+   425	tests/sophie-entreprenuity-social-factory.test.ts
+   426	tests/sophie-metricool-oauth.test.ts
+   427	tests/sophie-metricool-probe.test.ts
+   428	tests/sophie-metricool-publisher.test.ts
+   429	tests/sophie-social-blitz-five-blockers.test.ts
+   430	tests/sophie-social-provider-truth.test.ts
+   431	tests/specialist-brain-boot-contract.test.ts
+   432	tests/specialist-office-stall-guard.test.ts
+   433	tests/studio-fleet.test.ts
+   434	tests/studio-mcp-adapter-self-heal.test.ts
+   435	tests/studio-mcp-zombie-command-guard.test.ts
+   436	tests/studio-worker-heartbeat.test.ts
+   437	tests/supply-chain-gate.test.ts
+   438	tests/system-operator-security.test.ts
+   439	tests/task-runtime-capability-preflight.test.ts
+   440	tests/tenant-binding-adversarial.test.ts
+   441	tests/tom-camp-h4-sweep.test.ts
+   442	tests/tool-surface-common-sense.test.ts
+   443	tests/truthful-execution-chain-target1.test.ts
+   444	tests/universal-model-router.test.ts
+   445	tests/v1-acceptance.test.ts
+   446	tests/v2-credential-vault.test.ts
+   447	tests/v2-jules-lane-07-prompt-policy-firewall.test.ts
+   448	tests/v2-lane-11-queue-governor.test.ts
+   449	tests/v2-lane-14-canary-rollback.test.ts
+   450	tests/v2-lane-15-public-launch-chaos-gate.test.ts
+   451	tests/v2-resource-sandbox.test.ts
+   452	tests/v5-fastbuild-executor.test.ts
+   453	tests/v5-host-command-boundary.test.ts
+   454	tests/v5-operational-route-auth.test.ts
+   455	tests/v5-railway-revision-health.test.ts
+   456	tests/v5-roblox-builder.test.ts
+   457	tests/v5-roblox-generate-project.test.ts
+   458	tests/v7-entreprenuity-capability-extraction.test.ts
+   459	tests/v7-gmail-native.test.ts
+   460	tests/v7-lead-supply-discovery.test.ts
+   461	tests/v7-lead-supply.test.ts
+   462	tests/v7-ppl-outbound.test.ts
+   463	tests/v7-revenue-product-pack.test.ts
+   464	tests/voice-and-founder-office-stream.test.ts
+   465	tests/web-search-tool.test.ts
+   466	tests/windows-system-operator-recovery-contract.test.ts
+   467	tests/zero-cost-chat-boot.test.ts
+   468	tests/zoho-mail-oauth.test.ts
+
