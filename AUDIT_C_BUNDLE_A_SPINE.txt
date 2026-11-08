@@ -8032,8 +8032,8 @@
 
 
 ===== FILE: geminx-v2/src/modules/geminx_engine/durable-objective.ts =====
-===== SHA256: 729dbdd897e1bd3925acbd7ee51420e6bd590b983460e9990600de56cf0a2f92 =====
-===== LINES: 298 =====
+===== SHA256: b25e6ce6294017d0038a4cc7a3a6974c840601fd388a34175fc82a2a3316c814 =====
+===== LINES: 304 =====
      1	import { randomUUID, createHash } from "node:crypto";
      2	
      3	export type DurableArchetype = "PRODUCTION_DEPLOYMENT" | "INFRASTRUCTURE_REPAIR" | "AUDIT_OR_RESEARCH" | "CONTENT_OR_OUTREACH";
@@ -8134,204 +8134,210 @@
     98	  const statusRaw = field(fields, ["http_status", "status_code", "statusCode"]);
     99	  const httpStatus = typeof statusRaw === "number" ? statusRaw : Number(statusRaw);
    100	  const url = nonEmpty(field(fields, ["url", "request_url", "endpoint"]));
-   101	  const readMethod = nonEmpty(field(fields, ["method"]) ?? objectOf(call.args).method).toUpperCase() || "GET";
-   102	
-   103	  const wantsReadOnlyConstraint = /\b(?:perform no mutation|no mutation|read[- ]only)\b/.test(description);
-   104	  if (wantsReadOnlyConstraint) {
-   105	    const anyMutationExecuted = allCalls.some(c => isMutatingToolName(nonEmpty(c.tool)));
-   106	    if (anyMutationExecuted || isMutatingToolName(tool)) return null;
-   107	    return "readonly_verified:" + tool + callSuffix;
-   108	  }
-   109	
-   110	  const wantsDeploy = /\b(?:deploy|railway|production rollout|release to production)\b/.test(description);
-   111	  const wantsTests = /\b(?:test|regression|typecheck|probe|vitest|compile|tsc)\b/.test(description);
-   112	  const wantsArtifact = /\b(?:artifact|image|screenshot|video|file hash|sha256)\b/.test(description);
-   113	  const wantsHttp = /\b(?:http|status code|live endpoint|website|api route|reachable)\b/.test(description);
-   114	  const wantsGit = /\b(?:git|commit|source sha|repository revision)\b/.test(description);
-   115	  const wantsInspection = /\b(?:inspect|truth|audit|verify|check)\b/.test(description);
-   116	  const wantsRepair = /\b(?:fix|repair|remedy)\b/.test(description);
-   117	  const wantsReceipts = /\b(?:receipts?|proven|completion|evidence)\b/.test(description);
-   118	  const wantsContinue = /\b(?:continue|standing|self-maintenance)\b/.test(description);
-   119	  const evidence: Record<string, string> = {};
-   120	  if (/railway.*(?:status|deployment|describe|get)|deployment.*status/i.test(tool) &&
-   121	      sha && deploymentId && deploymentState === "SUCCESS") {
-   122	    evidence.deploy = "railway:" + deploymentId + ":" + sha;
-   123	  }
-   124	  if ((/test|shell|command|exec|compile/i.test(tool)) &&
-   125	      Number(exitCode) === 0 && exitCode !== undefined &&
-   126	      /\b(?:vitest|jest|pytest|npm\s+test|npx\s+tsc|typecheck|unittest)\b/i.test(command)) {
-   127	    evidence.test = "test:" + tool + ":" + command.slice(0, 120) + ":exit0";
-   128	  }
-   129	  const isWorkspaceClean = field(fields, ["clean"]) === true || field(fields, ["status"]) === "VERIFIED_CLEAN";
-   130	  const hasTestsPassed = field(fields, ["tests_passed"]) === true;
-   131	  if (/workspace_run_verification/i.test(tool) && isWorkspaceClean && hasTestsPassed) {
-   132	    const wsSha = nonEmpty(field(fields, ["receipt_sha256"])) || "passed";
-   133	    evidence.test = "test:workspace_run_verification:" + wsSha.slice(0, 32);
-   134	  }
-   135	  if (/antigravity_harness_execute/i.test(tool)) {
-   136	    evidence.test = "test:antigravity_harness:verified";
+   101	  // ARGON-4 / DS-NOVEL-02: HTTP method must come from verified result fields, never assumed or read from call.args.
+   102	  const resultMethod = nonEmpty(field(fields, ["method"])).toUpperCase();
+   103	  const isDedicatedGetTool = /^(?:http_get|http_probe|url_fetch|read_url_content)$/i.test(tool);
+   104	  const readMethod = resultMethod || (isDedicatedGetTool ? "GET" : "");
+   105	
+   106	  const wantsReadOnlyConstraint = /\b(?:perform no mutation|no mutation|read[- ]only)\b/.test(description);
+   107	  if (wantsReadOnlyConstraint) {
+   108	    const anyMutationExecuted = allCalls.some(c => isMutatingToolName(nonEmpty(c.tool)));
+   109	    if (anyMutationExecuted || isMutatingToolName(tool)) return null;
+   110	    return "readonly_verified:" + tool + callSuffix;
+   111	  }
+   112	
+   113	  const wantsDeploy = /\b(?:deploy|railway|production rollout|release to production)\b/.test(description);
+   114	  const wantsTests = /\b(?:test|regression|typecheck|probe|vitest|compile|tsc)\b/.test(description);
+   115	  const wantsArtifact = /\b(?:artifact|image|screenshot|video|file hash|sha256)\b/.test(description);
+   116	  const wantsHttp = /\b(?:http|status code|live endpoint|website|api route|reachable)\b/.test(description);
+   117	  const wantsGit = /\b(?:git|commit|source sha|repository revision)\b/.test(description);
+   118	  const wantsInspection = /\b(?:inspect|truth|audit|verify|check)\b/.test(description);
+   119	  const wantsRepair = /\b(?:fix|repair|remedy)\b/.test(description);
+   120	  const wantsReceipts = /\b(?:receipts?|proven|completion|evidence)\b/.test(description);
+   121	  const wantsContinue = /\b(?:continue|standing|self-maintenance)\b/.test(description);
+   122	  const evidence: Record<string, string> = {};
+   123	  if (/railway.*(?:status|deployment|describe|get)|deployment.*status/i.test(tool) &&
+   124	      sha && deploymentId && deploymentState === "SUCCESS") {
+   125	    evidence.deploy = "railway:" + deploymentId + ":" + sha;
+   126	  }
+   127	  if ((/test|shell|command|exec|compile/i.test(tool)) &&
+   128	      Number(exitCode) === 0 && exitCode !== undefined &&
+   129	      /\b(?:vitest|jest|pytest|npm\s+test|npx\s+tsc|typecheck|unittest)\b/i.test(command)) {
+   130	    evidence.test = "test:" + tool + ":" + command.slice(0, 120) + ":exit0";
+   131	  }
+   132	  const isWorkspaceClean = field(fields, ["clean"]) === true || field(fields, ["status"]) === "VERIFIED_CLEAN";
+   133	  const hasTestsPassed = field(fields, ["tests_passed"]) === true;
+   134	  if (/workspace_run_verification/i.test(tool) && isWorkspaceClean && hasTestsPassed) {
+   135	    const wsSha = nonEmpty(field(fields, ["receipt_sha256"])) || "passed";
+   136	    evidence.test = "test:workspace_run_verification:" + wsSha.slice(0, 32);
    137	  }
-   138	  const ambushOutcome = nonEmpty(field(fields, ["outcome", "status"]));
-   139	  const ambushPreviewUrl = nonEmpty(field(fields, ["preview_url", "concept_url"]));
-   140	  const ambushProspectId = nonEmpty(field(fields, ["prospect_id", "slug"]));
-   141	  if (/office_digital_ambush_run|office_digital_ambush_stage/i.test(tool) &&
-   142	      (top.ok === true || ambushOutcome === "DOM_QA_PASSED_AWAITING_FOUNDER_APPROVAL" || Boolean(ambushPreviewUrl))) {
-   143	    const ambushRef = (ambushProspectId || ambushPreviewUrl || "verified").slice(0, 120);
-   144	    evidence.ambush = "ambush:" + tool + ":" + ambushRef;
-   145	    evidence.test = evidence.test || ("test:ambush_dom_qa:" + ambushRef);
-   146	    evidence.artifact = evidence.artifact || ("artifact:ambush_concept:" + ambushRef);
-   147	    evidence.http = evidence.http || ("http:ambush_preview:" + (ambushPreviewUrl || ambushRef).slice(0, 160));
+   138	  // ARGON-4: Calling antigravity_harness_execute alone does NOT prove tests passed.
+   139	  // Tests require explicit command/execution exitCode === 0 proof.
+   140	  const ambushOutcome = nonEmpty(field(fields, ["outcome", "status"]));
+   141	  const ambushPreviewUrl = nonEmpty(field(fields, ["preview_url", "concept_url"]));
+   142	  const ambushProspectId = nonEmpty(field(fields, ["prospect_id", "slug"]));
+   143	  if (/office_digital_ambush_run|office_digital_ambush_stage/i.test(tool) &&
+   144	      (top.ok === true || ambushOutcome === "DOM_QA_PASSED_AWAITING_FOUNDER_APPROVAL" || Boolean(ambushPreviewUrl))) {
+   145	    const ambushRef = (ambushProspectId || ambushPreviewUrl || "verified").slice(0, 120);
+   146	    // Ambush staging only proves ambush activity; it does NOT claim independent visual test, artifact, or http proof.
+   147	    evidence.ambush = "ambush:" + tool + ":" + ambushRef;
    148	  }
    149	  if (/office_digital_ambush_status/i.test(tool) && (field(fields, ["found"]) === true || Boolean(ambushPreviewUrl))) {
    150	    const ambushRef = (ambushProspectId || ambushPreviewUrl || "status").slice(0, 120);
    151	    evidence.ambush = evidence.ambush || ("ambush:status:" + ambushRef);
-   152	    evidence.http = evidence.http || ("http:ambush_status:" + ambushRef);
-   153	  }
-   154	  // A real browser screenshot must return a concrete artifact path or
-   155	  // SHA-256 through the trusted tool result. A bare {ok:true} (or model prose)
-   156	  // cannot certify six-width visual QA or an image acceptance criterion.
-   157	  const isBrowserCapture = /^(?:browser_take_screenshot|chrome_screenshot)$/.test(tool);
-   158	  const isGeneratedImage = tool === "google_image_generate";
-   159	  if ((isBrowserCapture && (artifactHash || artifactPath)) ||
-   160	      (isGeneratedImage && (artifactHash || artifactPath || top.ok === true))) {
-   161	    const imgRef = (artifactHash || artifactPath || callSuffix).slice(0, 120);
-   162	    evidence.artifact = evidence.artifact || ("artifact:" + tool + ":" + imgRef);
-   163	    evidence.test = evidence.test || ("test:" + tool + ":" + imgRef);
-   164	  }
-   165	  // An unregistered office_submit_lead cannot verify CRM persistence. Model
-   166	  // speech and even successful POST/write results are not independent proof.
-   167	  // Only a *separate* successful readback from the existing durable V7 CRM
-   168	  // with the matching persisted ID, scope, and provenance may pass this gate.
-   169	  if (/\b(?:crm|test[- ]?lead|lead capture|lead submission|submit (?:a )?lead)\b/i.test(description)) {
-   170	    const id=nonEmpty(field(fields,["lead_id"]));
-   171	    const proof=validSha(field(fields,["receipt_sha256"]),64);
-   172	    if (tool !== "office_crm_verify_test_lead" ||
-   173	        top.ok !== true || field(fields,["readback_verified"]) !== true ||
-   174	        field(fields,["persisted"]) !== true ||
-   175	        field(fields,["workspace_id"]) !== "entreprenuity" ||
-   176	        !/^lead-[a-z0-9-]{6,90}$/i.test(id) || !proof) return null;
-   177	    return "crm:persisted:readback:"+id+":"+proof;
+   152	  }
+   153	  // A real browser screenshot must return a concrete artifact path or
+   154	  // SHA-256 through the trusted tool result. A bare {ok:true} (or model prose)
+   155	  // cannot certify six-width visual QA or an image acceptance criterion.
+   156	  const isBrowserCapture = /^(?:browser_take_screenshot|chrome_screenshot)$/.test(tool);
+   157	  const isGeneratedImage = tool === "google_image_generate";
+   158	  if ((isBrowserCapture || isGeneratedImage) && (artifactHash || artifactPath)) {
+   159	    const imgRef = (artifactHash || artifactPath || callSuffix).slice(0, 120);
+   160	    evidence.artifact = evidence.artifact || ("artifact:" + tool + ":" + imgRef);
+   161	  }
+   162	  // An unregistered office_submit_lead cannot verify CRM persistence. Model
+   163	  // speech and even successful POST/write results are not independent proof.
+   164	  // Only a *separate* successful readback from the existing durable V7 CRM
+   165	  // with the matching persisted ID, scope, and provenance may pass this gate.
+   166	  if (/\b(?:crm|test[- ]?lead|lead capture|lead submission|submit (?:a )?lead)\b/i.test(description)) {
+   167	    const id=nonEmpty(field(fields,["lead_id"]));
+   168	    const proof=validSha(field(fields,["receipt_sha256"]),64);
+   169	    if (tool !== "office_crm_verify_test_lead" ||
+   170	        top.ok !== true || field(fields,["readback_verified"]) !== true ||
+   171	        field(fields,["persisted"]) !== true ||
+   172	        field(fields,["workspace_id"]) !== "entreprenuity" ||
+   173	        !/^lead-[a-z0-9-]{6,90}$/i.test(id) || !proof) return null;
+   174	    return "crm:persisted:readback:"+id+":"+proof;
+   175	  }
+   176	  if (/read|inspect|status|verify|head|fetch/i.test(tool) && artifactHash && artifactPath) {
+   177	    evidence.artifact = "artifact:" + artifactHash + ":" + artifactPath.slice(0, 120);
    178	  }
-   179	  if (/read|inspect|status|verify|head|fetch/i.test(tool) && artifactHash && artifactPath) {
-   180	    evidence.artifact = "artifact:" + artifactHash + ":" + artifactPath.slice(0, 120);
-   181	  }
-   182	  if (/read|status|fetch|verify|request|browse/i.test(tool) && httpStatus === 200 && url &&
-   183	      readMethod === "GET") {
-   184	    evidence.http = "http:get:200:" + url.slice(0, 180);
+   179	  if (/read|status|fetch|verify|request|browse/i.test(tool) && httpStatus === 200 && url &&
+   180	      readMethod === "GET") {
+   181	    evidence.http = "http:get:200:" + url.slice(0, 180);
+   182	  }
+   183	  if (/github.*(?:fetch|read|status|commit|get|create_or_update|patch)|git.*(?:read|status|show)/i.test(tool) && sha) {
+   184	    evidence.git = "git:" + sha;
    185	  }
-   186	  if (/github.*(?:fetch|read|status|commit|get|create_or_update|patch)|git.*(?:read|status|show)/i.test(tool) && sha) {
-   187	    evidence.git = "git:" + sha;
-   188	  }
-   189	  if (wantsDeploy) return evidence.deploy ?? null;
-   190	  if (wantsTests) return evidence.test || evidence.ambush || evidence.artifact || evidence.http || null;
-   191	  if (wantsArtifact) return evidence.artifact || evidence.ambush || null;
-   192	  if (wantsHttp) return evidence.http || evidence.ambush || null;
-   193	  if (wantsGit) return evidence.git ?? null;
-   194	  if (wantsInspection) return evidence.artifact || evidence.http || evidence.git || evidence.test || evidence.ambush || ("inspection:" + tool + callSuffix);
-   195	  if (wantsRepair) return evidence.git || evidence.test || evidence.artifact || evidence.ambush || ("repair:" + tool + callSuffix);
-   196	  if (wantsReceipts) return evidence.test || evidence.artifact || evidence.git || evidence.deploy || evidence.http || evidence.ambush || ("receipt:" + tool + callSuffix);
-   197	  if (wantsContinue) return evidence.git || evidence.test || evidence.artifact || evidence.ambush || ("continue:" + tool + callSuffix);
-   198	  // General/process criteria cannot be completed by a vaguely successful
-   199	  // tool. They need an explicit criterion-specific acceptance workflow.
-   200	  return boundIds.length
-   201	    ? evidence.deploy || evidence.test || evidence.artifact || evidence.http || evidence.git || evidence.ambush || null
-   202	    : evidence.ambush || null;
-   203	}
-   204	
-   205	export function promoteDurableCriteriaFromToolReceipts(
-   206	  contract: DurableObjectiveContract,
-   207	  toolCalls: readonly DurableToolReceipt[]
-   208	): CriterionPromotionResult {
-   209	  const newly_verified: string[] = [];
-   210	  const criteria = contract.acceptance_criteria.map(criterion => {
-   211	    if (criterion.status === "VERIFIED" && criterion.evidence_receipt) return criterion;
-   212	    // A FAILED criterion cannot be converted to VERIFIED without explicitly
-   213	    // restarting that criterion through the owning acceptance workflow.
-   214	    if (criterion.status !== "PENDING") return criterion;
-   215	    for (const call of toolCalls) {
-   216	      const evidence = receiptForCriterion(call, criterion, toolCalls);
-   217	      if (evidence) {
-   218	        newly_verified.push(criterion.id);
-   219	        return { ...criterion, status: "VERIFIED" as const, evidence_receipt: evidence };
-   220	      }
-   221	    }
-   222	    return criterion;
-   223	  });
-   224	  const remaining = criteria.filter(c => c.status !== "VERIFIED" || !c.evidence_receipt).map(c => c.id);
-   225	  return {
-   226	    contract: {
-   227	      ...contract,
-   228	      acceptance_criteria: criteria,
-   229	      current_stage: remaining.length ? "VERIFYING" : "CRITERIA_VERIFIED",
-   230	      next_action_pointer: remaining.length ? "VERIFY_CRITERIA:" + remaining.join(",") : "RECONCILE_TERMINAL_PROOF",
-   231	      updated_at: newly_verified.length ? new Date().toISOString() : contract.updated_at
-   232	    },
-   233	    newly_verified,
-   234	    remaining
-   235	  };
-   236	}
-   237	
-   238	export function classifyDurableArchetype(rawIntent: string, readOnly: boolean): DurableArchetype {
-   239	  if (readOnly) return "AUDIT_OR_RESEARCH";
-   240	  if (/\b(?:deploy|deployment|railway|vercel|production rollout|ship(?:ping)? to production)\b/i.test(rawIntent))
-   241	    return "PRODUCTION_DEPLOYMENT";
-   242	  if (/\b(?:outreach|campaign|email sequence|prospect|marketing|social post|social blitz|digital ambush|content|newsletter)\b/i.test(rawIntent))
-   243	    return "CONTENT_OR_OUTREACH";
-   244	  return "INFRASTRUCTURE_REPAIR";
-   245	}
-   246	export function ensureDurableObjective(
-   247	  existing: Partial<DurableObjectiveContract> | undefined,
-   248	  rawIntent: string,
-   249	  criteria: string[] = [],
-   250	  readOnly = false,
-   251	  explicitSpendCeilingCents?: number | null
-   252	): DurableObjectiveContract {
-   253	  const previous = Array.isArray(existing?.acceptance_criteria) ? existing.acceptance_criteria : [];
-   254	  const acceptance_criteria: DurableCriterion[] = previous.length
-   255	    ? previous
-   256	    : (criteria.length ? criteria : [rawIntent]).map((description, i) => ({
-   257	      id: "criterion_" + (i + 1), description, status: "PENDING" as const
-   258	    }));
-   259	  const spend = existing?.spend_ceiling_cents ?? explicitSpendCeilingCents;
-   260	  return {
-   261	    objective_id: existing?.objective_id || randomUUID(),
-   262	    raw_founder_intent: existing?.raw_founder_intent || rawIntent,
-   263	    archetype: existing?.archetype || classifyDurableArchetype(existing?.raw_founder_intent || rawIntent, readOnly),
-   264	    acceptance_criteria,
-   265	    current_stage: existing?.current_stage || "ACTIVE_EXECUTION",
-   266	    next_action_pointer: existing?.next_action_pointer || "EXECUTE_NEXT_UNVERIFIED_CRITERION",
-   267	    recovery_attempts: Math.min(2, Math.max(0, Math.floor(existing?.recovery_attempts ?? 0))),
-   268	    max_recovery_attempts: 2,
-   269	    spend_ceiling_cents: typeof spend === "number" && Number.isSafeInteger(spend) && spend >= 0 ? spend : null,
-   270	    updated_at: existing?.updated_at || new Date().toISOString()
-   271	  };
-   272	}
-   273	export function resolveDurableRecovery(
-   274	  contract: DurableObjectiveContract,
-   275	  failedToolName?: string
-   276	): { action: "ATTEMPT_FALLBACK_CAPABILITY" | "ESCALATE_TO_WARDEN_INBOX"; contract: DurableObjectiveContract } {
-   277	  const attempts = Math.max(0, Math.min(2, contract.recovery_attempts));
-   278	  const canRecover = attempts < 2;
-   279	  const now = new Date().toISOString();
-   280	  return {
-   281	    action: canRecover ? "ATTEMPT_FALLBACK_CAPABILITY" : "ESCALATE_TO_WARDEN_INBOX",
-   282	    contract: {
-   283	      ...contract, recovery_attempts: canRecover ? attempts + 1 : attempts, max_recovery_attempts: 2,
-   284	      current_stage: canRecover ? "ATTEMPT_FALLBACK_CAPABILITY" : "WARDEN_CORRECTION_REQUIRED",
-   285	      next_action_pointer: canRecover
-   286	        ? failedToolName === "shell" ? "USE_GITHUB_OR_FS_DIRECT_TOOLS" : "RETRY_WITH_DIFFERENT_AUTHORISED_TOOL_STRATEGY"
-   287	        : "ESCALATE_STRUCTURED_BLOCKER_WITH_EVIDENCE",
-   288	      updated_at: now
-   289	    }
-   290	  };
-   291	}
-   292	
-   293	/** Idempotent per (job, failure fingerprint), with a suffix never truncated away. */
-   294	export function wardenCorrectionMessageId(jobId: string, failureFingerprint: string): string {
-   295	  const safe = jobId.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 112);
-   296	  const digest = createHash("sha256").update(jobId + "\\0" + failureFingerprint).digest("hex").slice(0, 24);
-   297	  return "warden-correction-" + safe + "-" + digest;
-   298	}
+   186	  if (wantsDeploy) return evidence.deploy ?? null;
+   187	  if (wantsTests) return evidence.test || null;
+   188	  if (wantsArtifact) return evidence.artifact || null;
+   189	  if (wantsHttp) return evidence.http || null;
+   190	  if (wantsGit) return evidence.git ?? null;
+   191	  // ARGON-4: Delete synthetic keyword catch-alls (inspection:, repair:, receipt:, continue:).
+   192	  // Real criteria require genuine typed evidence receipts.
+   193	  if (wantsInspection) return evidence.artifact || evidence.http || evidence.git || evidence.test || null;
+   194	  if (wantsRepair) return evidence.git || evidence.test || evidence.artifact || null;
+   195	  if (wantsReceipts) return evidence.test || evidence.artifact || evidence.git || evidence.deploy || evidence.http || null;
+   196	  if (wantsContinue) return evidence.git || evidence.test || evidence.artifact || null;
+   197	  // General/process criteria cannot be completed by a vaguely successful
+   198	  // tool. They need an explicit criterion-specific acceptance workflow.
+   199	  return boundIds.length
+   200	    ? evidence.deploy || evidence.test || evidence.artifact || evidence.http || evidence.git || null
+   201	    : null;
+   202	}
+   203	
+   204	export function promoteDurableCriteriaFromToolReceipts(
+   205	  contract: DurableObjectiveContract,
+   206	  toolCalls: readonly DurableToolReceipt[]
+   207	): CriterionPromotionResult {
+   208	  const newly_verified: string[] = [];
+   209	  const criteria = contract.acceptance_criteria.map(criterion => {
+   210	    if (criterion.status === "VERIFIED" && criterion.evidence_receipt) return criterion;
+   211	    // A FAILED criterion cannot be converted to VERIFIED without explicitly
+   212	    // restarting that criterion through the owning acceptance workflow.
+   213	    if (criterion.status !== "PENDING") return criterion;
+   214	    for (const call of toolCalls) {
+   215	      const evidence = receiptForCriterion(call, criterion, toolCalls);
+   216	      if (evidence) {
+   217	        newly_verified.push(criterion.id);
+   218	        return { ...criterion, status: "VERIFIED" as const, evidence_receipt: evidence };
+   219	      }
+   220	    }
+   221	    return criterion;
+   222	  });
+   223	  const remaining = criteria.filter(c => c.status !== "VERIFIED" || !c.evidence_receipt).map(c => c.id);
+   224	  return {
+   225	    contract: {
+   226	      ...contract,
+   227	      acceptance_criteria: criteria,
+   228	      current_stage: remaining.length ? "VERIFYING" : "CRITERIA_VERIFIED",
+   229	      next_action_pointer: remaining.length ? "VERIFY_CRITERIA:" + remaining.join(",") : "RECONCILE_TERMINAL_PROOF",
+   230	      updated_at: newly_verified.length ? new Date().toISOString() : contract.updated_at
+   231	    },
+   232	    newly_verified,
+   233	    remaining
+   234	  };
+   235	}
+   236	
+   237	export function classifyDurableArchetype(rawIntent: string, readOnly: boolean): DurableArchetype {
+   238	  if (readOnly) return "AUDIT_OR_RESEARCH";
+   239	  if (/\b(?:deploy|deployment|railway|vercel|production rollout|ship(?:ping)? to production)\b/i.test(rawIntent))
+   240	    return "PRODUCTION_DEPLOYMENT";
+   241	  if (/\b(?:outreach|campaign|email sequence|prospect|marketing|social post|social blitz|digital ambush|content|newsletter)\b/i.test(rawIntent))
+   242	    return "CONTENT_OR_OUTREACH";
+   243	  return "INFRASTRUCTURE_REPAIR";
+   244	}
+   245	export function ensureDurableObjective(
+   246	  existing: Partial<DurableObjectiveContract> | undefined,
+   247	  rawIntent: string,
+   248	  criteria: string[] = [],
+   249	  readOnly = false,
+   250	  explicitSpendCeilingCents?: number | null
+   251	): DurableObjectiveContract {
+   252	  const previous = Array.isArray(existing?.acceptance_criteria) ? existing.acceptance_criteria : [];
+   253	  const acceptance_criteria: DurableCriterion[] = previous.length
+   254	    ? previous
+   255	    : (criteria.length ? criteria : [rawIntent]).map((description, i) => ({
+   256	      id: "criterion_" + (i + 1), description, status: "PENDING" as const
+   257	    }));
+   258	  const maxRecovery = typeof existing?.max_recovery_attempts === "number" && existing.max_recovery_attempts > 0
+   259	    ? Math.min(10, Math.floor(existing.max_recovery_attempts))
+   260	    : 2;
+   261	  return {
+   262	    objective_id: existing?.objective_id || randomUUID(),
+   263	    raw_founder_intent: existing?.raw_founder_intent || rawIntent,
+   264	    archetype: existing?.archetype || classifyDurableArchetype(existing?.raw_founder_intent || rawIntent, readOnly),
+   265	    acceptance_criteria,
+   266	    current_stage: existing?.current_stage || "ACTIVE_EXECUTION",
+   267	    next_action_pointer: existing?.next_action_pointer || "EXECUTE_NEXT_UNVERIFIED_CRITERION",
+   268	    recovery_attempts: Math.min(maxRecovery, Math.max(0, Math.floor(existing?.recovery_attempts ?? 0))),
+   269	    max_recovery_attempts: maxRecovery,
+   270	    spend_ceiling_cents: typeof explicitSpendCeilingCents === "number" && Number.isSafeInteger(explicitSpendCeilingCents) && explicitSpendCeilingCents >= 0
+   271	      ? explicitSpendCeilingCents
+   272	      : (typeof existing?.spend_ceiling_cents === "number" ? existing.spend_ceiling_cents : null),
+   273	    updated_at: existing?.updated_at || new Date().toISOString()
+   274	  };
+   275	}
+   276	  export function resolveDurableRecovery(
+   277	    contract: DurableObjectiveContract,
+   278	    failedToolName?: string
+   279	  ): { action: "ATTEMPT_FALLBACK_CAPABILITY" | "ESCALATE_TO_WARDEN_INBOX"; contract: DurableObjectiveContract } {
+   280	    const maxAttempts = typeof contract.max_recovery_attempts === "number" && contract.max_recovery_attempts > 0
+   281	      ? Math.min(10, Math.floor(contract.max_recovery_attempts))
+   282	      : 2;
+   283	    const attempts = Math.max(0, Math.min(maxAttempts, contract.recovery_attempts));
+   284	    const canRecover = attempts < maxAttempts;
+   285	    const now = new Date().toISOString();
+   286	    return {
+   287	      action: canRecover ? "ATTEMPT_FALLBACK_CAPABILITY" : "ESCALATE_TO_WARDEN_INBOX",
+   288	      contract: {
+   289	        ...contract, recovery_attempts: canRecover ? attempts + 1 : attempts, max_recovery_attempts: maxAttempts,
+   290	        current_stage: canRecover ? "ATTEMPT_FALLBACK_CAPABILITY" : "WARDEN_CORRECTION_REQUIRED",
+   291	        next_action_pointer: canRecover
+   292	          ? failedToolName === "shell" ? "USE_GITHUB_OR_FS_DIRECT_TOOLS" : "RETRY_WITH_DIFFERENT_AUTHORISED_TOOL_STRATEGY"
+   293	          : "ESCALATE_STRUCTURED_BLOCKER_WITH_EVIDENCE",
+   294	        updated_at: now
+   295	      }
+   296	    };
+   297	  }
+   298	
+   299	/** Idempotent per (job, failure fingerprint), with a suffix never truncated away. */
+   300	export function wardenCorrectionMessageId(jobId: string, failureFingerprint: string): string {
+   301	  const safe = jobId.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 112);
+   302	  const digest = createHash("sha256").update(jobId + "\\0" + failureFingerprint).digest("hex").slice(0, 24);
+   303	  return "warden-correction-" + safe + "-" + digest;
+   304	}
 
 
 ===== FILE: geminx-v2/src/modules/geminx_engine/completion-warden.ts =====
